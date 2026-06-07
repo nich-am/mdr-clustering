@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 
 from core.pipeline  import run_pipeline, build_excel
 from core.materials import load_mrm, build_material_summary, summarise_by_defect, top_parts_across_fleet
@@ -36,12 +37,6 @@ st.markdown("""
 <style>
   [data-testid="stMetricValue"] { font-size: 2rem; font-weight: 500; }
   div[data-testid="stExpander"] { border: 0.5px solid #e0e0e0; border-radius:8px; }
-  .pill { display:inline-block; font-size:11px; font-weight:500; padding:2px 9px;
-          border-radius:10px; margin:1px; }
-  .pill-fleet  { background:#E1F5EE; color:#0F6E56; }
-  .pill-common { background:#E6F1FB; color:#185FA5; }
-  .pill-iso    { background:#F1EFE8; color:#5F5E5A; }
-  .pill-part   { background:#FFF3E0; color:#7B4400; font-family:monospace; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -60,7 +55,7 @@ with st.sidebar:
 
     n_files = st.number_input("Number of aircraft", min_value=1, max_value=10, value=3)
 
-    ac_entries = []   # list of {ac_reg, nrc_file, mrm_file}
+    ac_entries = []
     for i in range(n_files):
         st.markdown(f"**Aircraft #{i+1}**")
         col_a, col_b = st.columns([1, 2])
@@ -76,18 +71,19 @@ with st.sidebar:
                 key=f"rev_{i}", placeholder="e.g. 00221737",
                 label_visibility="collapsed",
             )
-
         nrc_file = st.file_uploader(
-            f"Findings (MDR)", type=["xlsx","xls"],
-            key=f"nrc_{i}", label_visibility="visible",
+            "Findings (MDR)", type=["xlsx","xls"],
+            key=f"nrc_{i}",
         )
         mrm_file = st.file_uploader(
-            f"Materials (MRM)", type=["xlsx","xls"],
-            key=f"mrm_{i}", label_visibility="visible",
+            "Materials (MRM)", type=["xlsx","xls"],
+            key=f"mrm_{i}",
         )
         label = f"{ac_reg} ({rev_no})" if rev_no else ac_reg
-        ac_entries.append({"label": label, "ac_reg": ac_reg,
-                           "rev_no": rev_no, "nrc_file": nrc_file, "mrm_file": mrm_file})
+        ac_entries.append({
+            "label": label, "ac_reg": ac_reg,
+            "rev_no": rev_no, "nrc_file": nrc_file, "mrm_file": mrm_file,
+        })
         st.markdown("---")
 
     st.markdown("### 2 · Settings")
@@ -95,8 +91,8 @@ with st.sidebar:
         help="Lower = more clusters. Higher = fewer, tighter clusters.")
     top_n_score = st.slider("Top N defects to show", 10, 50, 25)
     min_ac_parts = st.slider(
-        "Min AC for pre-provision recommendation", 1, n_files, min(2, n_files),
-        help="Parts appearing in this many aircraft are flagged as fleet-level candidates."
+        "Min AC for pre-provision", 1, max(1, n_files), min(2, n_files),
+        help="Parts appearing in this many aircraft flagged as fleet-level candidates."
     )
 
     st.markdown("---")
@@ -130,10 +126,8 @@ if run_btn:
     else:
         with st.spinner("Running pipeline…"):
             try:
-                # NRC clustering pipeline
                 results = run_pipeline(nrc_uploads, min_cluster_size=min_cluster)
 
-                # Load MRM files
                 mrm_dict = {}
                 for e in ac_entries:
                     if e["mrm_file"] is not None and e["label"] in nrc_uploads:
@@ -142,15 +136,12 @@ if run_btn:
                         except Exception as ex:
                             st.warning(f"Could not load MRM for {e['label']}: {ex}")
 
-                # Build material tables
                 mat_detail  = pd.DataFrame()
                 mat_summary = pd.DataFrame()
                 top_parts   = pd.DataFrame()
 
                 if mrm_dict:
-                    mat_detail  = build_material_summary(
-                        results["df"], mrm_dict, results["scores"]
-                    )
+                    mat_detail  = build_material_summary(results["df"], mrm_dict, results["scores"])
                     mat_summary = summarise_by_defect(mat_detail)
                     top_parts   = top_parts_across_fleet(mat_detail, min_ac=min_ac_parts)
 
@@ -163,7 +154,7 @@ if run_btn:
                 st.success(
                     f"Done! {len(results['df'])} NRCs · "
                     f"{len(results['projects'])} aircraft · "
-                    f"{len(mrm_dict)} MRM files loaded."
+                    f"{len(mrm_dict)} MRM file(s) loaded."
                 )
             except Exception as e:
                 st.error(f"Error: {e}")
@@ -186,56 +177,77 @@ if st.session_state.results:
     n_clusters  = df[df["cluster_id"] != -1]["cluster_id"].nunique()
     n_noise     = (df["cluster_id"] == -1).sum()
     n_fleet     = int((scores["tier"] == "Fleet-wide").sum()) if not scores.empty else 0
-    n_common    = int((scores["tier"] == "Common").sum())     if not scores.empty else 0
 
-    # KPIs
+    # ── KPIs ──────────────────────────────────────────────────────────────────
     st.markdown("---")
-    cols = st.columns(7 if has_mrm else 6)
-    cols[0].metric("Total NRCs",       f"{len(df):,}")
-    cols[1].metric("Aircraft",          len(projects))
-    cols[2].metric("Clusters",          n_clusters)
-    cols[3].metric("NRCs clustered",   f"{n_clustered:,}")
-    cols[4].metric("Fleet-wide defects", n_fleet)
-    cols[5].metric("One-off NRCs",       n_noise)
+    kpi_cols = st.columns(7 if has_mrm else 6)
+    kpi_cols[0].metric("Total NRCs",        f"{len(df):,}")
+    kpi_cols[1].metric("Aircraft",           len(projects))
+    kpi_cols[2].metric("Clusters",           n_clusters)
+    kpi_cols[3].metric("NRCs clustered",    f"{n_clustered:,}")
+    kpi_cols[4].metric("Fleet-wide defects", n_fleet)
+    kpi_cols[5].metric("One-off NRCs",       n_noise)
     if has_mrm:
-        cols[6].metric("Unique parts (fleet)", int(top_parts["Part Number"].nunique()) if not top_parts.empty else 0)
+        kpi_cols[6].metric(
+            "Unique parts (fleet)",
+            int(top_parts["Part Number"].nunique()) if not top_parts.empty else 0,
+        )
 
     # AC legend
     ac_colors = ["#5DCAA5","#85B7EB","#FAC775","#D85A30","#534AB7","#D4537E"]
     pills = " &nbsp; ".join(
-        f"<span style='background:{ac_colors[i%len(ac_colors)]};color:#333;"
+        f"<span style='background:{ac_colors[i % len(ac_colors)]};color:#333;"
         f"padding:3px 10px;border-radius:8px;font-size:12px;font-weight:500'>"
-        f"{p}{'&nbsp;📦' if p in R.get('mrm_dict',{}) else ''}</span>"
+        f"{p}{'&nbsp;📦' if p in R.get('mrm_dict', {}) else ''}</span>"
         for i, p in enumerate(projects)
     )
-    st.markdown(f"**Aircraft:** {pills} &nbsp; *(📦 = MRM file loaded)*", unsafe_allow_html=True)
+    st.markdown(f"**Aircraft:** {pills} &nbsp; *(📦 = MRM loaded)*", unsafe_allow_html=True)
     st.markdown("---")
 
-    # Tabs — add Materials tabs only if MRM loaded
-    base_tabs  = ["📊 Ranked defects", "🌍 Fleet-wide", "🗺️ Similarity map",
-                  "🔥 Manhour impact", "📈 Score breakdown", "📋 Data tables"]
-    mrm_tabs   = ["🔩 Materials by defect", "📦 Pre-provision list"] if has_mrm else []
-    all_tabs   = base_tabs + mrm_tabs
-    tab_objs   = st.tabs(all_tabs)
+    # ── Build tab list dynamically ────────────────────────────────────────────
+    base_tab_names = [
+        "📊 Ranked defects",
+        "🌍 Fleet-wide",
+        "🗺️ Similarity map",
+        "🔥 Manhour impact",
+        "📈 Score breakdown",
+        "📋 Data tables",
+    ]
+    mrm_tab_names = ["🔩 Materials by defect", "📦 Pre-provision list"] if has_mrm else []
+    all_tab_names = base_tab_names + mrm_tab_names
 
-    tidx = 0  # tab index counter
+    tabs = st.tabs(all_tab_names)
 
-    # ── TAB 0: Ranked defects ─────────────────────────────────────────────────
-    with tab_objs[tidx]; tidx += 1:
+    tab_ranked  = tabs[0]
+    tab_fleet   = tabs[1]
+    tab_map     = tabs[2]
+    tab_mhrs    = tabs[3]
+    tab_score   = tabs[4]
+    tab_data    = tabs[5]
+    tab_matdef  = tabs[6] if has_mrm else None
+    tab_preprov = tabs[7] if has_mrm else None
+
+    # ── TAB: Ranked defects ───────────────────────────────────────────────────
+    with tab_ranked:
         st.markdown("#### Defects ranked by weighted commonality score")
         st.markdown(
             "Score = **50% presence** (across aircraft) + "
             "**30% frequency** (NRC rate) + **20% manhour cost**"
         )
-        tier_filter = st.radio("Filter", ["All","Fleet-wide","Common","Isolated"], horizontal=True)
+        tier_filter = st.radio(
+            "Filter", ["All", "Fleet-wide", "Common", "Isolated"], horizontal=True
+        )
         filt = scores if tier_filter == "All" else scores[scores["tier"] == tier_filter]
         st.plotly_chart(ranked_bar(filt, top_n=top_n_score), use_container_width=True)
-        c1, c2 = st.columns(2)
-        with c1: st.plotly_chart(damage_distribution(df),  use_container_width=True)
-        with c2: st.plotly_chart(tier_donut(scores),       use_container_width=True)
 
-    # ── TAB 1: Fleet-wide ─────────────────────────────────────────────────────
-    with tab_objs[tidx]; tidx += 1:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.plotly_chart(damage_distribution(df), use_container_width=True)
+        with c2:
+            st.plotly_chart(tier_donut(scores), use_container_width=True)
+
+    # ── TAB: Fleet-wide ───────────────────────────────────────────────────────
+    with tab_fleet:
         fleet = scores[scores["tier"] == "Fleet-wide"]
         if fleet.empty:
             st.info("No fleet-wide defects found.")
@@ -244,36 +256,33 @@ if st.session_state.results:
             count_cols = [c for c in fleet.columns if c.startswith("count_")]
 
             for _, row in fleet.iterrows():
-                # Material badge count
+                n_parts = 0
                 if has_mrm:
                     parts_for = mat_detail[mat_detail["defect_key"] == row["defect_key"]]
                     n_parts   = parts_for["Part Number"].nunique()
-                    mat_badge = f"&nbsp; 🔩 {n_parts} parts" if n_parts else ""
-                else:
-                    mat_badge = ""
 
                 with st.expander(
                     f"**{row['location']} — {row['damage_type']}**"
                     f"  |  Score: {row['score']:.3f}"
                     f"  |  {int(row['total_count'])} NRCs"
                     f"  |  {row['avg_mhrs']:.1f}h avg"
+                    + (f"  |  🔩 {n_parts} parts" if n_parts else "")
                 ):
                     ac_c = st.columns(len(count_cols))
                     for i, col in enumerate(count_cols):
-                        ac_c[i].metric(col.replace("count_",""), int(row[col]))
+                        ac_c[i].metric(col.replace("count_", ""), int(row[col]))
 
                     sub = df[
                         (df["location"] == row["location"]) &
                         (df["damage_type"] == row["damage_type"])
-                    ][["project","Description","Skill Active","Act Mhrs"]]
+                    ][["project", "Description", "Skill Active", "Act Mhrs"]]
                     st.dataframe(sub.reset_index(drop=True), use_container_width=True)
 
-                    # Inline materials for this defect
                     if has_mrm and n_parts > 0:
                         st.markdown("**Materials requested for this defect:**")
                         mat_show = parts_for[[
-                            "ac_reg","Order No","Part Number",
-                            "Material Description","Qty Req","UOM","Fulfillment Status"
+                            "ac_reg", "Order No", "Part Number",
+                            "Material Description", "Qty Req", "UOM", "Fulfillment Status",
                         ]].reset_index(drop=True)
                         st.dataframe(mat_show, use_container_width=True)
 
@@ -281,11 +290,12 @@ if st.session_state.results:
             st.plotly_chart(fleet_grouped_bar(scores, projects), use_container_width=True)
             st.plotly_chart(frequency_heatmap(scores, top_n=top_n_score), use_container_width=True)
 
-    # ── TAB 2: Similarity map ─────────────────────────────────────────────────
-    with tab_objs[tidx]; tidx += 1:
+    # ── TAB: Similarity map ───────────────────────────────────────────────────
+    with tab_map:
         st.markdown("#### NRC similarity map")
         st.markdown("Each dot = one NRC. Proximity = similar title language.")
         st.plotly_chart(scatter_map(df, X_2d), use_container_width=True)
+
         c1, c2 = st.columns(2)
         with c1:
             st.plotly_chart(cluster_size_dist(df), use_container_width=True)
@@ -293,76 +303,90 @@ if st.session_state.results:
             cs = (
                 df[df["cluster_id"] != -1]
                 .groupby("cluster_label")
-                .agg(count=("Description","count"), ac=("project","nunique"))
+                .agg(count=("Description", "count"), ac=("project", "nunique"))
                 .sort_values("count", ascending=False)
                 .reset_index()
             )
             st.markdown("**Cluster summary**")
             st.dataframe(cs, use_container_width=True, height=280)
 
-    # ── TAB 3: Manhour impact ─────────────────────────────────────────────────
-    with tab_objs[tidx]; tidx += 1:
+    # ── TAB: Manhour impact ───────────────────────────────────────────────────
+    with tab_mhrs:
         st.markdown("#### Defects by manhour burden")
         st.plotly_chart(manhour_bar(scores, top_n=top_n_score), use_container_width=True)
 
-        fleet = scores[scores["tier"] == "Fleet-wide"].copy()
-        if not fleet.empty:
-            fleet["label"] = fleet["location"] + " — " + fleet["damage_type"]
-            import plotly.express as px
+        fleet_mh = scores[scores["tier"] == "Fleet-wide"].copy()
+        if not fleet_mh.empty:
+            fleet_mh["label"] = fleet_mh["location"] + " — " + fleet_mh["damage_type"]
             bubble = px.scatter(
-                fleet, x="total_count", y="avg_mhrs",
+                fleet_mh, x="total_count", y="avg_mhrs",
                 size="score", color="score", text="label",
                 color_continuous_scale="Teal",
                 title="Fleet-wide — NRC count vs manhours (bubble = score)",
-                labels={"total_count":"NRC count","avg_mhrs":"Avg manhours"},
+                labels={"total_count": "NRC count", "avg_mhrs": "Avg manhours"},
                 height=420,
             )
             bubble.update_traces(textposition="top center", textfont_size=10)
-            bubble.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            bubble.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)"
+            )
             st.plotly_chart(bubble, use_container_width=True)
 
-    # ── TAB 4: Score breakdown ────────────────────────────────────────────────
-    with tab_objs[tidx]; tidx += 1:
+    # ── TAB: Score breakdown ──────────────────────────────────────────────────
+    with tab_score:
         st.markdown("#### Score component breakdown")
         st.plotly_chart(score_components_bar(scores, top_n=15), use_container_width=True)
         c1, c2, c3 = st.columns(3)
-        c1.info("**Presence · 50%**\nFraction of aircraft with this defect.\n3/3=1.0 · 2/3=0.67 · 1/3=0.33")
+        c1.info("**Presence · 50%**\nFraction of aircraft with this defect.\n"
+                "3/3 = 1.0 · 2/3 = 0.67 · 1/3 = 0.33")
         c2.info("**Frequency · 30%**\nAvg NRC rate per aircraft, normalised 0–1.")
         c3.info("**Manhour cost · 20%**\nAvg actual manhours, normalised 0–1.")
 
-    # ── TAB 5: Data tables ────────────────────────────────────────────────────
-    with tab_objs[tidx]; tidx += 1:
+    # ── TAB: Data tables ──────────────────────────────────────────────────────
+    with tab_data:
         st.markdown("#### All NRCs with cluster assignments")
-        show_cols = [c for c in ["project","Description","Skill Active","Act Mhrs",
-                                  "cluster_label","location","damage_type"] if c in df.columns]
+        show_cols = [c for c in [
+            "project", "Description", "Skill Active", "Act Mhrs",
+            "cluster_label", "location", "damage_type",
+        ] if c in df.columns]
+
         f1, f2, f3 = st.columns(3)
-        sel_ac  = f1.multiselect("Aircraft", options=projects, default=projects)
-        sel_dmg = f2.selectbox("Damage type", ["All"]+sorted(df["damage_type"].dropna().unique().tolist()))
-        sel_loc = f3.selectbox("Location",    ["All"]+sorted(df["location"].dropna().unique().tolist()))
+        sel_ac  = f1.multiselect("Aircraft",     options=projects, default=projects)
+        sel_dmg = f2.selectbox("Damage type",    ["All"] + sorted(df["damage_type"].dropna().unique().tolist()))
+        sel_loc = f3.selectbox("Location",       ["All"] + sorted(df["location"].dropna().unique().tolist()))
+
         mask = df["project"].isin(sel_ac)
-        if sel_dmg != "All": mask &= df["damage_type"] == sel_dmg
-        if sel_loc != "All": mask &= df["location"]    == sel_loc
+        if sel_dmg != "All":
+            mask &= df["damage_type"] == sel_dmg
+        if sel_loc != "All":
+            mask &= df["location"] == sel_loc
+
         st.markdown(f"Showing **{mask.sum()}** NRCs")
-        st.dataframe(df[mask][show_cols].reset_index(drop=True), use_container_width=True, height=380)
+        st.dataframe(df[mask][show_cols].reset_index(drop=True),
+                     use_container_width=True, height=380)
 
         st.markdown("---")
         st.markdown("#### EDA score table")
-        sc_cols = ["defect_key","tier","total_count","projects_count","avg_mhrs","score"] + \
-                  [c for c in scores.columns if c.startswith("count_")]
-        st.dataframe(scores[[c for c in sc_cols if c in scores.columns]],
-                     use_container_width=True, height=340)
+        sc_cols = (
+            ["defect_key", "tier", "total_count", "projects_count", "avg_mhrs", "score"]
+            + [c for c in scores.columns if c.startswith("count_")]
+        )
+        st.dataframe(
+            scores[[c for c in sc_cols if c in scores.columns]],
+            use_container_width=True, height=340,
+        )
 
-    # ── TAB 6: Materials by defect (MRM only) ─────────────────────────────────
-    if has_mrm:
-        with tab_objs[tidx]; tidx += 1:
+    # ── TAB: Materials by defect ──────────────────────────────────────────────
+    if has_mrm and tab_matdef is not None:
+        with tab_matdef:
             st.markdown("#### Materials linked to each defect cluster")
             st.markdown(
-                "For every scored defect, these are the materials (toggle=**Y**) "
+                "For every scored defect, these are the materials (toggle = **Y**) "
                 "requested on the matched orders across all aircraft."
             )
 
-            tier_f = st.radio("Show tier", ["All","Fleet-wide","Common","Isolated"],
-                              horizontal=True, key="mat_tier")
+            tier_f  = st.radio("Show tier", ["All", "Fleet-wide", "Common", "Isolated"],
+                               horizontal=True, key="mat_tier")
             score_f = scores if tier_f == "All" else scores[scores["tier"] == tier_f]
 
             for _, srow in score_f.head(top_n_score).iterrows():
@@ -373,9 +397,6 @@ if st.session_state.results:
 
                 n_unique = parts["Part Number"].nunique()
                 n_ac     = parts["ac_reg"].nunique()
-                tier_cls = ("pill-fleet" if srow["tier"]=="Fleet-wide"
-                            else "pill-common" if srow["tier"]=="Common"
-                            else "pill-iso")
 
                 with st.expander(
                     f"**{srow['location']} — {srow['damage_type']}**"
@@ -383,21 +404,29 @@ if st.session_state.results:
                     f"  |  {n_unique} unique parts"
                     f"  |  {n_ac} aircraft"
                 ):
-                    # Pivot: one row per part, columns per AC
                     piv = (
                         parts
-                        .groupby(["Part Number","Material Description","UOM","Type","ac_reg"])["Qty Req"]
+                        .groupby([
+                            "Part Number", "Material Description",
+                            "UOM", "Type", "ac_reg",
+                        ])["Qty Req"]
                         .sum()
                         .unstack(fill_value=0)
                         .reset_index()
                     )
                     piv["Total Qty"] = piv.select_dtypes("number").sum(axis=1)
-                    piv["AC count"]  = (piv.select_dtypes("number").drop(columns=["Total Qty"]) > 0).sum(axis=1)
-                    piv = piv.sort_values(["AC count","Total Qty"], ascending=[False,False])
+                    piv["# Aircraft"] = (
+                        piv.select_dtypes("number")
+                        .drop(columns=["Total Qty"])
+                        .gt(0)
+                        .sum(axis=1)
+                    )
+                    piv = piv.sort_values(["# Aircraft", "Total Qty"], ascending=[False, False])
                     st.dataframe(piv, use_container_width=True)
 
-        # ── TAB 7: Pre-provision list ─────────────────────────────────────────
-        with tab_objs[tidx]; tidx += 1:
+    # ── TAB: Pre-provision list ───────────────────────────────────────────────
+    if has_mrm and tab_preprov is not None:
+        with tab_preprov:
             st.markdown("#### Pre-provision recommendations")
             st.markdown(
                 f"Parts appearing in **≥ {min_ac_parts} aircraft** for the same defect — "
@@ -405,26 +434,26 @@ if st.session_state.results:
             )
 
             if top_parts.empty:
-                st.info(f"No parts found in ≥{min_ac_parts} aircraft. Try lowering the threshold.")
+                st.info(f"No parts found in ≥ {min_ac_parts} aircraft. Try lowering the threshold.")
             else:
-                # Summary KPIs
                 k1, k2, k3 = st.columns(3)
-                k1.metric("Recommended parts",       len(top_parts))
+                k1.metric("Recommended parts",        len(top_parts))
                 k2.metric("Distinct defects covered", int(top_parts["defect_count"].sum()))
                 k3.metric("Total qty to pre-provision", f"{top_parts['total_qty'].sum():,.0f}")
 
                 st.markdown("---")
-
-                # Filter by type
-                types = ["All"] + sorted(top_parts["Type"].dropna().unique().tolist())
+                types   = ["All"] + sorted(top_parts["Type"].dropna().unique().tolist())
                 sel_type = st.selectbox("Filter by material type", types)
-                show_parts = top_parts if sel_type == "All" else top_parts[top_parts["Type"] == sel_type]
+                show_parts = (
+                    top_parts if sel_type == "All"
+                    else top_parts[top_parts["Type"] == sel_type]
+                )
 
-                display_cols = [
-                    "Part Number","Material Description","UOM","Type",
-                    "ac_count","defect_count","total_qty","defects","ac_list","avg_score"
-                ]
-                display_cols = [c for c in display_cols if c in show_parts.columns]
+                display_cols = [c for c in [
+                    "Part Number", "Material Description", "UOM", "Type",
+                    "ac_count", "defect_count", "total_qty",
+                    "defects", "ac_list", "avg_score",
+                ] if c in show_parts.columns]
 
                 st.dataframe(
                     show_parts[display_cols].rename(columns={
@@ -439,8 +468,6 @@ if st.session_state.results:
                     height=460,
                 )
 
-                # Breakdown chart
-                import plotly.express as px
                 fig = px.bar(
                     show_parts.head(30),
                     x="total_qty",
@@ -449,18 +476,22 @@ if st.session_state.results:
                     orientation="h",
                     color_continuous_scale="Blues",
                     title="Top 30 recommended parts — total qty · shaded by # aircraft",
-                    labels={"total_qty":"Total qty","ac_count":"# Aircraft",
-                            "Material Description":"Part"},
+                    labels={
+                        "total_qty":            "Total qty",
+                        "ac_count":             "# Aircraft",
+                        "Material Description": "Part",
+                    },
                     height=max(400, len(show_parts.head(30)) * 26),
                 )
                 fig.update_layout(
                     yaxis=dict(autorange="reversed", tickfont_size=10),
-                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
                     margin=dict(l=280, r=20, t=50, b=30),
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-    # ── Download ──────────────────────────────────────────────────────────────
+    # ── Downloads ─────────────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("### Download")
     dl1, dl2 = st.columns(2)
@@ -468,7 +499,7 @@ if st.session_state.results:
     with dl1:
         excel_bytes = build_excel(df, scores)
         st.download_button(
-            "⬇️ Download NRC clusters + EDA scores (Excel)",
+            "⬇️ NRC clusters + EDA scores (Excel)",
             data=excel_bytes,
             file_name="nrc_clustering_results.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -480,25 +511,26 @@ if st.session_state.results:
             buf = io.BytesIO()
             with pd.ExcelWriter(buf, engine="openpyxl") as writer:
                 if not mat_detail.empty:
-                    mat_detail.to_excel(writer, sheet_name="Material_Detail", index=False)
+                    mat_detail.to_excel(writer, sheet_name="Material_Detail",    index=False)
                 if not mat_summary.empty:
-                    mat_summary.to_excel(writer, sheet_name="Material_by_Defect", index=False)
+                    mat_summary.to_excel(writer, sheet_name="Material_by_Defect",index=False)
                 if not top_parts.empty:
-                    top_parts.to_excel(writer, sheet_name="PreProvision_List", index=False)
+                    top_parts.to_excel(writer,   sheet_name="PreProvision_List", index=False)
             buf.seek(0)
             st.download_button(
-                "⬇️ Download material analysis (Excel)",
+                "⬇️ Material analysis (Excel)",
                 data=buf.read(),
                 file_name="nrc_material_analysis.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
 else:
+    # ── Landing state ──────────────────────────────────────────────────────────
     st.info("👈 Upload NRC files in the sidebar and click **Run analysis**.")
     st.markdown("---")
     st.markdown("### How it works")
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.markdown("**1 · Upload**\nOne MDR + MRM file per aircraft. MRM is optional.")
+    c1.markdown("**1 · Upload**\nOne MDR + optional MRM file per aircraft.")
     c2.markdown("**2 · Cluster**\nTF-IDF → UMAP → HDBSCAN groups similar NRC titles.")
     c3.markdown("**3 · Score**\nWeighted EDA scores by presence, frequency & manhours.")
     c4.markdown("**4 · Materials**\nJoins MRM (toggle=Y) to each defect via Order No.")
