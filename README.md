@@ -1,6 +1,6 @@
 # MDR Findings Clustering App
 
-Streamlit app for clustering and EDA of Maintenance Discrepancy and Rectification (MDR) findings
+Streamlit app for clustering and EDA of Maintenance Discrepancy and Rectification (MDR) card findings
 across maintenance events of the same workscope and aircraft type.
 
 ---
