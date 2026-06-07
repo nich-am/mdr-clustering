@@ -14,7 +14,8 @@ nrc_app/
 ├── core/
 │   ├── preprocess.py       ← text cleaning, location/damage extraction
 │   ├── pipeline.py         ← full ML pipeline (vectorize → cluster → score)
-│   └── charts.py           ← all Plotly chart builders
+│   ├── charts.py           ← all Plotly chart builders
+|   └── materials.py        ← feature add on for material preprocessing
 └── README.md
 ```
 
