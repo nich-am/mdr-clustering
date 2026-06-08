@@ -1,6 +1,6 @@
-# MDR Findings Clustering App
+# NRC Findings Clustering App
 
-Streamlit app for clustering and EDA of Maintenance Discrepancy and Rectification (MDR) card findings
+Streamlit app for clustering and EDA of Non-Routine Card (NRC) findings
 across maintenance events of the same workscope and aircraft type.
 
 ---
@@ -14,8 +14,7 @@ nrc_app/
 ├── core/
 │   ├── preprocess.py       ← text cleaning, location/damage extraction
 │   ├── pipeline.py         ← full ML pipeline (vectorize → cluster → score)
-│   ├── charts.py           ← all Plotly chart builders
-|   └── materials.py        ← feature add on for material preprocessing
+│   └── charts.py           ← all Plotly chart builders
 └── README.md
 ```
 
@@ -100,8 +99,8 @@ So your team can use it from a browser without installing anything:
 
 ### Step 1 — Push code to GitHub
 1. Create a free account at https://github.com
-2. Create a new repository (e.g. `mdr-clustering`)
-3. Upload all files from the `mdr_app/` folder to the repo root
+2. Create a new repository (e.g. `nrc-clustering`)
+3. Upload all files from the `nrc_app/` folder to the repo root
 
 ### Step 2 — Deploy on Streamlit Cloud
 1. Go to https://share.streamlit.io
@@ -111,7 +110,7 @@ So your team can use it from a browser without installing anything:
 5. Click **Deploy**
 
 The app will be live at a URL like:
-`https://your-username-mdr-clustering-app-xxxxx.streamlit.app`
+`https://your-username-nrc-clustering-app-xxxxx.streamlit.app`
 
 Share that URL with your team — no installation needed.
 
