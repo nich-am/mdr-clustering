@@ -16,7 +16,7 @@ import hdbscan
 import umap
 
 from core.preprocess import (
-    clean_text, get_damage, get_location, build_cluster_label
+    clean_text, get_damage, get_location, get_sub_component, build_cluster_label
 )
 
 warnings.filterwarnings("ignore")
@@ -46,7 +46,8 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     df["preprocessed"] = df["Description"].apply(clean_text)
     df["damage_type"]  = df["Description"].apply(get_damage)
     df["location"]     = df["Description"].apply(get_location)
-    df["defect_key"]   = df["location"] + " | " + df["damage_type"]
+    df["sub_component"]  = df["Description"].apply(get_sub_component)
+    df["defect_key"]     = df["location"] + " | " + df["damage_type"]
     return df
 
 
@@ -103,7 +104,6 @@ def cluster(X_reduced, min_cluster_size=5):
 
 # ── 6. Label clusters ─────────────────────────────────────────────────────
 def label_clusters(df: pd.DataFrame, vectorizer, X_tfidf) -> dict:
-    feature_names = vectorizer.get_feature_names_out()
     cluster_labels = {}
     raw_labels = {}
 
@@ -114,7 +114,7 @@ def label_clusters(df: pd.DataFrame, vectorizer, X_tfidf) -> dict:
         titles = df.loc[df["cluster_id"] == cid, "Description"].tolist()
         raw_labels[cid] = build_cluster_label(titles)
 
-    # Disambiguate duplicates
+    # Disambiguate true duplicates with variant suffix
     label_count = Counter(raw_labels.values())
     used = Counter()
     for cid, base in raw_labels.items():
@@ -125,6 +125,39 @@ def label_clusters(df: pd.DataFrame, vectorizer, X_tfidf) -> dict:
             cluster_labels[cid] = base
 
     return cluster_labels
+
+
+def merge_same_defect_clusters(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Post-clustering merge: clusters that share the SAME (location, damage_type)
+    are collapsed into a single cluster ID (the smallest one wins).
+
+    This fixes over-clustering where HDBSCAN splits the same defect into
+    multiple clusters due to minor phrasing differences (e.g. LH vs RH,
+    SIDFLOOR vs SIDE FLOOR, UPPER vs LOWER).
+
+    Sub-component is intentionally NOT used as a merge key — we want
+    "wing screw broken" and "wing bonding broken" to stay separate.
+    """
+    df = df.copy()
+    # Build (location, damage_type) → min cluster_id mapping
+    valid = df[df["cluster_id"] != -1].copy()
+    if valid.empty:
+        return df
+
+    merge_map = (
+        valid.groupby(["location", "damage_type"])["cluster_id"]
+        .min()
+        .to_dict()
+    )
+
+    def remap(row):
+        if row["cluster_id"] == -1:
+            return -1
+        return merge_map.get((row["location"], row["damage_type"]), row["cluster_id"])
+
+    df["cluster_id"] = df.apply(remap, axis=1)
+    return df
 
 
 # ── 7. Weighted EDA scoring ───────────────────────────────────────────────
@@ -212,6 +245,12 @@ def run_pipeline(uploaded_files: dict, min_cluster_size: int = 5) -> dict:
 
     labels = cluster(X_reduced, min_cluster_size=min_cluster_size)
     df["cluster_id"] = labels
+
+    # Preprocess: extract location + damage before merge
+    df = preprocess(df) if "location" not in df.columns else df
+
+    # Post-merge: collapse clusters with same (location, damage_type) into one
+    df = merge_same_defect_clusters(df)
 
     cluster_map = label_clusters(df, vectorizer, X_tfidf)
     df["cluster_label"] = df["cluster_id"].map(cluster_map)
