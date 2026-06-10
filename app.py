@@ -100,21 +100,12 @@ with st.sidebar:
             })
             st.markdown("---")
 
-        st.markdown("### 2 · Non-ROP / Min-Max database *(optional)*")
-        st.markdown(
-            "Upload the Non-ROP database to check if each material "
-            "is already min-maxed."
-        )
-        rop_file = st.file_uploader(
-            "Non-ROP database (Excel)", type=["xlsx","xls"], key="rop_db"
-        )
-
-        st.markdown("### 3 · Run settings")
+        st.markdown("### 2 · Run settings")
         min_cluster  = st.slider("Min cluster size", 3, 20, 5)
         top_n_score  = st.slider("Top N defects",   10, 50, 25)
         min_ac_parts = st.slider("Min AC for pre-provision", 1, max(1,n_files), min(2,n_files))
 
-        st.markdown("### 4 · Run metadata")
+        st.markdown("### 3 · Run metadata")
         workscope = st.text_input("Workscope", placeholder="e.g. 6Y+12Y C-Check")
         ac_type   = st.text_input(
             "Aircraft type",
@@ -172,13 +163,16 @@ if page == "🔬 New analysis":
                     workscope_table = pd.DataFrame()
                     rop_db = pd.DataFrame()
 
-                    # Load Non-ROP database
-                    if rop_file is not None:
-                        try:
-                            rop_db = load_rop_db(rop_file, ac_type_filter=ac_type)
-                            st.info(f"Non-ROP DB loaded: {len(rop_db)} rows for '{ac_type}'")
-                        except Exception as ex:
-                            st.warning(f"Could not load Non-ROP DB: {ex}")
+                    # Load Non-ROP database from bundled file
+                    try:
+                        import os
+                        rop_path = os.path.join(
+                            os.path.dirname(__file__), "data", "rop_database.xlsx"
+                        )
+                        rop_db = load_rop_db(open(rop_path, "rb"), ac_type_filter=ac_type)
+                    except Exception as ex:
+                        st.warning(f"Could not load Non-ROP DB: {ex}")
+                        rop_db = pd.DataFrame()
 
                     if mrm_dict:
                         mat_detail      = build_material_summary(results["df"], mrm_dict, results["scores"])
