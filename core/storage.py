@@ -25,7 +25,7 @@ def _client():
     """Create Supabase client from Streamlit secrets."""
     try:
         from supabase import create_client
-        url = st.secrets["supabase"]["url"]
+        url = st.secrets["supabase"]["url"].rstrip("/")   # fix PGRST125
         key = st.secrets["supabase"]["key"]
         return create_client(url, key)
     except Exception as e:
@@ -64,7 +64,7 @@ def save_run(
         sb.storage.from_("nrc-reports").upload(
             excel_path,
             excel_bytes,
-            {"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+            file_options={"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
         )
         excel_url = sb.storage.from_("nrc-reports").get_public_url(excel_path)
     except Exception as e:
@@ -78,7 +78,7 @@ def save_run(
             sb.storage.from_("nrc-reports").upload(
                 pdf_path,
                 pdf_bytes,
-                {"content-type": "application/pdf"},
+                file_options={"content-type": "application/pdf"},
             )
             pdf_url = sb.storage.from_("nrc-reports").get_public_url(pdf_path)
         except Exception as e:
