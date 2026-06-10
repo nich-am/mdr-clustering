@@ -18,7 +18,9 @@ import pandas as pd
 import plotly.express as px
 
 from core.pipeline   import run_pipeline, build_excel
-from core.materials  import load_mrm, build_material_summary, summarise_by_defect, top_parts_across_fleet
+from core.materials  import (load_mrm, build_material_summary, summarise_by_defect,
+                             top_parts_across_fleet, load_rop_db,
+                             build_workscope_material_table, workscope_table_stats)
 from core.pdf_export import generate_pdf
 from core.storage    import (
     save_run, load_run_history, load_run_scores,
@@ -98,14 +100,27 @@ with st.sidebar:
             })
             st.markdown("---")
 
-        st.markdown("### 2 · Run settings")
+        st.markdown("### 2 · Non-ROP / Min-Max database *(optional)*")
+        st.markdown(
+            "Upload the Non-ROP database to check if each material "
+            "is already min-maxed."
+        )
+        rop_file = st.file_uploader(
+            "Non-ROP database (Excel)", type=["xlsx","xls"], key="rop_db"
+        )
+
+        st.markdown("### 3 · Run settings")
         min_cluster  = st.slider("Min cluster size", 3, 20, 5)
         top_n_score  = st.slider("Top N defects",   10, 50, 25)
         min_ac_parts = st.slider("Min AC for pre-provision", 1, max(1,n_files), min(2,n_files))
 
-        st.markdown("### 3 · Run metadata")
+        st.markdown("### 4 · Run metadata")
         workscope = st.text_input("Workscope", placeholder="e.g. 6Y+12Y C-Check")
-        ac_type   = st.text_input("Aircraft type", placeholder="e.g. A320-200")
+        ac_type   = st.text_input(
+            "Aircraft type",
+            placeholder="e.g. 320-200",
+            help="Must match ObjectType in Non-ROP DB e.g. 320-200, 737-800",
+        )
         notes     = st.text_area("Notes (optional)", height=80)
 
         st.markdown("---")
@@ -154,14 +169,30 @@ if page == "🔬 New analysis":
                                 st.warning(f"MRM load error ({e['label']}): {ex}")
 
                     mat_detail = mat_summary = top_parts = pd.DataFrame()
+                    workscope_table = pd.DataFrame()
+                    rop_db = pd.DataFrame()
+
+                    # Load Non-ROP database
+                    if rop_file is not None:
+                        try:
+                            rop_db = load_rop_db(rop_file, ac_type_filter=ac_type)
+                            st.info(f"Non-ROP DB loaded: {len(rop_db)} rows for '{ac_type}'")
+                        except Exception as ex:
+                            st.warning(f"Could not load Non-ROP DB: {ex}")
+
                     if mrm_dict:
-                        mat_detail  = build_material_summary(results["df"], mrm_dict, results["scores"])
-                        mat_summary = summarise_by_defect(mat_detail)
-                        top_parts   = top_parts_across_fleet(mat_detail, min_ac=min_ac_parts)
+                        mat_detail      = build_material_summary(results["df"], mrm_dict, results["scores"])
+                        mat_summary     = summarise_by_defect(mat_detail)
+                        top_parts       = top_parts_across_fleet(mat_detail, min_ac=min_ac_parts)
+                        workscope_table = build_workscope_material_table(
+                            mrm_dict,
+                            rop_db=rop_db if not rop_db.empty else None,
+                        )
 
                     results.update({
                         "mrm_dict": mrm_dict, "mat_detail": mat_detail,
                         "mat_summary": mat_summary, "top_parts": top_parts,
+                        "workscope_table": workscope_table, "rop_db": rop_db,
                         "workscope": workscope, "ac_type": ac_type, "notes": notes,
                     })
                     st.session_state.results = results
@@ -181,9 +212,12 @@ if page == "🔬 New analysis":
         scores     = R["scores"]
         X_2d       = R["X_2d"]
         projects   = R["projects"]
-        mat_detail = R["mat_detail"]
-        top_parts  = R["top_parts"]
-        has_mrm    = not mat_detail.empty
+        mat_detail      = R["mat_detail"]
+        top_parts       = R["top_parts"]
+        workscope_table = R.get("workscope_table", pd.DataFrame())
+        rop_db          = R.get("rop_db", pd.DataFrame())
+        has_mrm         = not mat_detail.empty
+        has_workscope   = not workscope_table.empty
 
         n_clustered = (df["cluster_id"] != -1).sum()
         n_clusters  = df[df["cluster_id"] != -1]["cluster_id"].nunique()
@@ -204,6 +238,14 @@ if page == "🔬 New analysis":
                 "Unique parts (fleet)",
                 int(top_parts["Part Number"].nunique()) if not top_parts.empty else 0,
             )
+        if has_workscope and not rop_db.empty:
+            from core.materials import workscope_table_stats
+            stats = workscope_table_stats(workscope_table, len(projects))
+            st.info(
+                f"📦 **{stats.get('fleet_wide_parts',0)}** parts used in all aircraft · "
+                f"❌ **{stats.get('not_min_maxed',0)}** not yet min-maxed · "
+                f"✅ **{stats.get('already_min_maxed',0)}** already min-maxed"
+            )
 
         ac_colors = ["#5DCAA5","#85B7EB","#FAC775","#D85A30","#534AB7","#D4537E"]
         pills = " &nbsp; ".join(
@@ -216,14 +258,16 @@ if page == "🔬 New analysis":
         st.markdown("---")
 
         # ── Tabs ──────────────────────────────────────────────────────────
-        base_names = ["📊 Ranked","🌍 Fleet-wide","🗺️ Map","🔥 Manhours",
-                      "📈 Score","📋 Data"]
-        mrm_names  = ["🔩 Materials","📦 Pre-provision"] if has_mrm else []
-        tabs = st.tabs(base_names + mrm_names)
+        base_names  = ["📊 Ranked","🌍 Fleet-wide","🗺️ Map","🔥 Manhours",
+                       "📈 Score","📋 Data"]
+        mrm_names   = ["🔩 Materials by defect","📦 Pre-provision"] if has_mrm else []
+        ws_names    = ["📋 Workscope materials"] if has_workscope else []
+        tabs = st.tabs(base_names + mrm_names + ws_names)
 
         tab_ranked, tab_fleet, tab_map, tab_mhrs, tab_score, tab_data = tabs[:6]
         tab_matdef  = tabs[6] if has_mrm else None
         tab_preprov = tabs[7] if has_mrm else None
+        tab_ws      = tabs[8] if (has_mrm and has_workscope) else (tabs[6] if has_workscope else None)
 
         # Ranked
         with tab_ranked:
@@ -407,6 +451,130 @@ if page == "🔬 New analysis":
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
+        # ── Workscope materials tab ───────────────────────────────────────
+        if has_workscope and tab_ws is not None:
+            with tab_ws:
+                from core.materials import workscope_table_stats
+                stats = workscope_table_stats(workscope_table, len(projects))
+
+                st.markdown("#### Workscope material recommendation")
+                st.markdown(
+                    "All materials called (toggle = **Y**) across the entire workscope, "
+                    "ranked by weighted score. "
+                    "Score = **Grand Total qty + (AC occurrence × 2)**."
+                )
+
+                # KPIs
+                wk1, wk2, wk3, wk4, wk5 = st.columns(5)
+                wk1.metric("Unique parts",              stats.get("total_unique_parts",0))
+                wk2.metric("Used in all aircraft",      stats.get("fleet_wide_parts",0))
+                wk3.metric("Not min-maxed ❌",           stats.get("not_min_maxed",0),
+                           help="In Non-ROP DB with ROP = No")
+                wk4.metric("Already min-maxed ✅",       stats.get("already_min_maxed",0))
+                wk5.metric("Highest score",             f"{stats.get('top_score',0):.0f}")
+
+                st.markdown("---")
+
+                # Filters
+                fc1, fc2, fc3, fc4 = st.columns(4)
+                occ_filter = fc1.selectbox(
+                    "AC occurrence",
+                    ["All", f"All {len(projects)} aircraft",
+                     f"{len(projects)-1} aircraft", "1 aircraft"],
+                )
+                mm_filter  = fc2.selectbox(
+                    "Min-Max status",
+                    ["All", "❌ Not min-maxed", "✅ Already min-maxed", "— Unknown"],
+                )
+                type_filter = fc3.selectbox(
+                    "Material type",
+                    ["All"] + sorted(workscope_table["Type"].dropna().unique().tolist()),
+                )
+                score_min = fc4.number_input("Min score", min_value=0, value=0, step=1)
+
+                # Apply filters
+                wt = workscope_table.copy()
+                if occ_filter == f"All {len(projects)} aircraft":
+                    wt = wt[wt["Total Occurrence"] == len(projects)]
+                elif occ_filter == f"{len(projects)-1} aircraft":
+                    wt = wt[wt["Total Occurrence"] == len(projects)-1]
+                elif occ_filter == "1 aircraft":
+                    wt = wt[wt["Total Occurrence"] == 1]
+                if mm_filter != "All":
+                    wt = wt[wt["Min-Maxed?"] == mm_filter]
+                if type_filter != "All":
+                    wt = wt[wt["Type"] == type_filter]
+                if score_min > 0:
+                    wt = wt[wt["Weighted Score"] >= score_min]
+
+                st.markdown(f"Showing **{len(wt)}** of {len(workscope_table)} materials")
+
+                # Colour cells by Min-Max status
+                def highlight_mm(val):
+                    if val == "❌ No":  return "background-color:#FFF0F0;color:#A32D2D"
+                    if val == "✅ Yes": return "background-color:#F0FFF4;color:#0F6E56"
+                    return ""
+
+                def highlight_score(val):
+                    try:
+                        v = float(val)
+                        if v >= 30: return "background-color:#E1F5EE;font-weight:600"
+                        if v >= 15: return "background-color:#E6F1FB"
+                    except: pass
+                    return ""
+
+                qty_ac_cols = [c for c in wt.columns if c.startswith("qty_")]
+                rename_map  = {c: c.replace("qty_","") for c in qty_ac_cols}
+                wt_display  = wt.rename(columns=rename_map)
+
+                styled = wt_display.style                     .applymap(highlight_mm,    subset=["Min-Maxed?"])                     .applymap(highlight_score, subset=["Weighted Score"])
+
+                st.dataframe(styled, use_container_width=True, height=520)
+
+                st.markdown("---")
+
+                # Not min-maxed fleet-wide — top priority recommendation
+                not_mm_fleet = wt[
+                    (wt["Min-Maxed?"] == "❌ No") &
+                    (wt["Total Occurrence"] == len(projects))
+                ]
+                if not not_mm_fleet.empty:
+                    st.markdown(
+                        f"### 🎯 Priority recommendation: "
+                        f"{len(not_mm_fleet)} parts used in **all aircraft** but **not yet min-maxed**"
+                    )
+                    st.markdown(
+                        "These are the strongest candidates to add to the min-max plan — "
+                        "they appear in every maintenance event for this workscope."
+                    )
+                    st.dataframe(
+                        not_mm_fleet.rename(columns=rename_map),
+                        use_container_width=True,
+                        height=min(400, len(not_mm_fleet)*38+50),
+                    )
+
+                    # Bar chart of top 20
+                    import plotly.express as px
+                    top20 = not_mm_fleet.head(20).rename(columns=rename_map)
+                    fig = px.bar(
+                        top20,
+                        x="Weighted Score",
+                        y="Material Description",
+                        orientation="h",
+                        color="Total Occurrence",
+                        color_continuous_scale="Teal",
+                        title="Priority parts — all aircraft, not min-maxed (sorted by score)",
+                        labels={"Total Occurrence": "# AC"},
+                        height=max(350, len(top20)*28),
+                    )
+                    fig.update_layout(
+                        yaxis=dict(autorange="reversed", tickfont_size=10),
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        margin=dict(l=280, r=20, t=50, b=30),
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
         # ── Downloads + Save ──────────────────────────────────────────────
         st.markdown("---")
         st.markdown("### Export & Save")
@@ -449,9 +617,15 @@ if page == "🔬 New analysis":
             mat_buf = io.BytesIO()
             with pd.ExcelWriter(mat_buf, engine="openpyxl") as writer:
                 if not mat_detail.empty:
-                    mat_detail.to_excel(writer, sheet_name="Material_Detail",     index=False)
+                    mat_detail.to_excel(writer, sheet_name="Material_Detail",      index=False)
                 if not top_parts.empty:
-                    top_parts.to_excel(writer,  sheet_name="PreProvision_List",   index=False)
+                    top_parts.to_excel(writer,  sheet_name="PreProvision_List",    index=False)
+                if not workscope_table.empty:
+                    ws_export = workscope_table.copy()
+                    ws_export.columns = [
+                        c.replace("qty_","") for c in ws_export.columns
+                    ]
+                    ws_export.to_excel(writer, sheet_name="Workscope_Materials",   index=False)
             mat_buf.seek(0)
             with col3:
                 st.download_button(
