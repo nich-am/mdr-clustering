@@ -14,9 +14,9 @@ Two separate views:
        • Min-Max status  from the Non-ROP database
 
 Join keys:
-  MRM  Part Number  (format "PN:SLOC" e.g. "NSA936020-01:F5442")
+  MRM  Part Number  (format "PN" or "PN:VendorNumber" e.g. "NSA936020-01" or "NSA936020-01:F5442")
   NRC  Order No     (matches MRM Order column)
-  ROP  Material     (same "PN:SLOC" format — direct match)
+  ROP  Material     ("PN:VendorNumber" format — joined on full key first, base PN as fallback)
 """
 
 import io
@@ -240,25 +240,45 @@ def build_workscope_material_table(
 
     # ── Join ROP database ──────────────────────────────────────────────────
     if rop_db is not None and not rop_db.empty and "Material" in rop_db.columns:
-        # ROP Material (col C) = "PN:VendorCode" — same format as MRM Part Number (col D)
-        # Normalise both sides: strip whitespace, uppercase for case-insensitive match
+        # ROP Material format:  "PN:VendorNumber"  e.g. "ASG33:36131"
+        # MRM Part Number may:  include vendor number  → "ASG33:36131"  (exact match)
+        #                    or omit  vendor number    → "ASG33"         (base-PN match)
+        # Strategy: try exact match first; for unmatched rows fall back to
+        # matching on the base PN (everything before the colon).
+
         rop_lookup = rop_db[["Material","min_maxed","Reorder Point","Max. level"]].copy()
-        rop_lookup["_key"] = rop_lookup["Material"].astype(str).str.strip().str.upper()
-        rop_lookup = rop_lookup.drop_duplicates(subset=["_key"])
+        rop_lookup["_key_full"] = rop_lookup["Material"].astype(str).str.strip().str.upper()
+        rop_lookup["_key_base"] = rop_lookup["_key_full"].str.split(":").str[0]
+        # For base-PN lookup, keep the first (preferred AC type) row per base PN
+        rop_base = rop_lookup.drop_duplicates(subset=["_key_base"], keep="first")
 
-        merged["_key"] = merged["Part Number"].astype(str).str.strip().str.upper()
+        merged["_key_full"] = merged["Part Number"].astype(str).str.strip().str.upper()
+        merged["_key_base"] = merged["_key_full"].str.split(":").str[0]
 
+        # Pass 1 — exact full-key join
         merged = merged.merge(
-            rop_lookup[["_key","min_maxed","Reorder Point","Max. level"]],
-            on="_key", how="left"
+            rop_lookup[["_key_full","min_maxed","Reorder Point","Max. level"]]
+            .drop_duplicates(subset=["_key_full"]),
+            on="_key_full", how="left"
         )
+
+        # Pass 2 — fill unmatched rows via base-PN join
+        unmatched = merged["min_maxed"].isna()
+        if unmatched.any():
+            base_fill = merged.loc[unmatched, ["_key_base"]].merge(
+                rop_base[["_key_base","min_maxed","Reorder Point","Max. level"]],
+                on="_key_base", how="left"
+            )
+            merged.loc[unmatched, "min_maxed"]      = base_fill["min_maxed"].values
+            merged.loc[unmatched, "Reorder Point"]  = base_fill["Reorder Point"].values
+            merged.loc[unmatched, "Max. level"]     = base_fill["Max. level"].values
 
         merged["Min-Maxed?"] = merged["min_maxed"].map(
             {True: "✅ Yes", False: "❌ No"}
         ).fillna("—")
         merged["Reorder Point"] = merged["Reorder Point"].fillna(0).round(2)
         merged["Max. level"]    = merged["Max. level"].fillna(0).round(2)
-        merged = merged.drop(columns=["min_maxed","_key"], errors="ignore")
+        merged = merged.drop(columns=["min_maxed","_key_full","_key_base"], errors="ignore")
     else:
         merged["Min-Maxed?"]    = "—"
         merged["Reorder Point"] = 0
