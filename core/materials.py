@@ -293,7 +293,26 @@ def build_workscope_material_table(
     end_cols   = ["Grand Total","Total Occurrence","Weighted Score",
                   "Min-Maxed?","Reorder Point","Max. level"]
     all_cols   = front_cols + ac_cols + end_cols
-    return merged[[c for c in all_cols if c in merged.columns]]
+    result = merged[[c for c in all_cols if c in merged.columns]].copy()
+
+    # Smart number formatting: drop .000000 → show as int; keep meaningful decimals
+    # up to 2 places with trailing zeros stripped  (e.g. 1.50 → 1.5, 12454.0 → 12454)
+    numeric_display_cols = qty_cols + ["Grand Total","Weighted Score","Reorder Point","Max. level"]
+    for col in numeric_display_cols:
+        if col not in result.columns:
+            continue
+        col_data = pd.to_numeric(result[col], errors="coerce")
+        rounded  = col_data.round(2)
+        # If every non-null value is a whole number, store as Int64 (nullable int)
+        if (rounded.dropna() == rounded.dropna().apply(lambda x: int(x))).all():
+            result[col] = rounded.fillna(0).astype(int)
+        else:
+            # Keep as float but strip unnecessary trailing zeros via object column
+            result[col] = rounded.apply(
+                lambda x: int(x) if pd.notna(x) and x == int(x) else x
+            )
+
+    return result
 
 
 def workscope_table_stats(df: pd.DataFrame, n_ac: int) -> dict:
