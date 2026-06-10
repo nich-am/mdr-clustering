@@ -24,7 +24,8 @@ from core.materials  import (load_mrm, build_material_summary, summarise_by_defe
 from core.pdf_export import generate_pdf
 from core.storage    import (
     save_run, load_run_history, load_run_scores,
-    load_run_materials, delete_run, compare_runs,
+    load_run_materials, load_workscope_materials,
+    delete_run, compare_runs,
 )
 from core.charts import (
     scatter_map, ranked_bar, fleet_grouped_bar,
@@ -103,7 +104,6 @@ with st.sidebar:
         st.markdown("### 2 · Run settings")
         min_cluster  = st.slider("Min cluster size", 3, 20, 5)
         top_n_score  = st.slider("Top N defects",   10, 50, 25)
-        min_ac_parts = st.slider("Min AC for pre-provision", 1, max(1,n_files), min(2,n_files))
 
         st.markdown("### 3 · Run metadata")
         workscope = st.text_input("Workscope", placeholder="e.g. 6Y+12Y C-Check")
@@ -177,7 +177,7 @@ if page == "🔬 New analysis":
                     if mrm_dict:
                         mat_detail      = build_material_summary(results["df"], mrm_dict, results["scores"])
                         mat_summary     = summarise_by_defect(mat_detail)
-                        top_parts       = top_parts_across_fleet(mat_detail, min_ac=min_ac_parts)
+                        top_parts       = top_parts_across_fleet(mat_detail)
                         workscope_table = build_workscope_material_table(
                             mrm_dict,
                             rop_db=rop_db if not rop_db.empty else None,
@@ -254,14 +254,13 @@ if page == "🔬 New analysis":
         # ── Tabs ──────────────────────────────────────────────────────────
         base_names  = ["📊 Ranked","🌍 Fleet-wide","🗺️ Map","🔥 Manhours",
                        "📈 Score","📋 Data"]
-        mrm_names   = ["🔩 Materials by defect","📦 Pre-provision"] if has_mrm else []
+        mrm_names   = ["🔩 Materials by defect"] if has_mrm else []
         ws_names    = ["📋 Workscope materials"] if has_workscope else []
         tabs = st.tabs(base_names + mrm_names + ws_names)
 
         tab_ranked, tab_fleet, tab_map, tab_mhrs, tab_score, tab_data = tabs[:6]
         tab_matdef  = tabs[6] if has_mrm else None
-        tab_preprov = tabs[7] if has_mrm else None
-        tab_ws      = tabs[8] if (has_mrm and has_workscope) else (tabs[6] if has_workscope else None)
+        tab_ws      = tabs[7] if has_mrm and has_workscope else (tabs[6] if has_workscope else None)
 
         # Ranked
         with tab_ranked:
@@ -406,45 +405,6 @@ if page == "🔬 New analysis":
                         st.dataframe(piv.sort_values("# Aircraft", ascending=False),
                                      use_container_width=True)
 
-        # Pre-provision
-        if has_mrm and tab_preprov is not None:
-            with tab_preprov:
-                st.markdown("#### Pre-provision recommendations")
-                if top_parts.empty:
-                    st.info(f"No parts found in ≥{min_ac_parts} aircraft.")
-                else:
-                    k1, k2, k3 = st.columns(3)
-                    k1.metric("Recommended parts",          len(top_parts))
-                    k2.metric("Distinct defects covered",   int(top_parts["defect_count"].sum()))
-                    k3.metric("Total qty",                  f"{top_parts['total_qty'].sum():,.0f}")
-                    types     = ["All"] + sorted(top_parts["Type"].dropna().unique().tolist())
-                    sel_type  = st.selectbox("Filter type", types)
-                    show_pts  = top_parts if sel_type=="All" else top_parts[top_parts["Type"]==sel_type]
-                    disp_cols = [c for c in ["Part Number","Material Description","UOM","Type",
-                                             "ac_count","defect_count","total_qty","defects",
-                                             "ac_list","avg_score"] if c in show_pts.columns]
-                    st.dataframe(
-                        show_pts[disp_cols].rename(columns={
-                            "ac_count":"# AC","defect_count":"# Defects",
-                            "total_qty":"Total Qty","defects":"Defect types",
-                            "ac_list":"Found in AC","avg_score":"Avg score",
-                        }),
-                        use_container_width=True, height=460,
-                    )
-                    fig = px.bar(
-                        show_pts.head(30), x="total_qty", y="Material Description",
-                        color="ac_count", orientation="h", color_continuous_scale="Blues",
-                        title="Top 30 parts — total qty",
-                        labels={"total_qty":"Total qty","ac_count":"# AC"},
-                        height=max(400, len(show_pts.head(30))*26),
-                    )
-                    fig.update_layout(
-                        yaxis=dict(autorange="reversed", tickfont_size=10),
-                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                        margin=dict(l=280, r=20, t=50, b=30),
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-
         # ── Workscope materials tab ───────────────────────────────────────
         if has_workscope and tab_ws is not None:
             with tab_ws:
@@ -527,47 +487,81 @@ if page == "🔬 New analysis":
 
                 st.markdown("---")
 
-                # Not min-maxed fleet-wide — top priority recommendation
-                not_mm_fleet = wt[
-                    (wt["Min-Maxed?"] == "❌ No") &
-                    (wt["Total Occurrence"] == len(projects))
-                ]
-                if not not_mm_fleet.empty:
+                # ── Pre-provision priority section ────────────────────────
+                # Parts used in ALL aircraft = strongest pre-provision candidates
+                all_ac_parts = workscope_table[
+                    workscope_table["Total Occurrence"] == len(projects)
+                ].sort_values("Weighted Score", ascending=False)
+
+                if not all_ac_parts.empty:
+                    st.markdown("---")
                     st.markdown(
-                        f"### 🎯 Priority recommendation: "
-                        f"{len(not_mm_fleet)} parts used in **all aircraft** but **not yet min-maxed**"
+                        f"### 📦 Pre-provision recommendation — "
+                        f"{len(all_ac_parts)} parts used in **all {len(projects)} aircraft**"
                     )
                     st.markdown(
-                        "These are the strongest candidates to add to the min-max plan — "
-                        "they appear in every maintenance event for this workscope."
-                    )
-                    st.dataframe(
-                        not_mm_fleet.rename(columns=rename_map),
-                        use_container_width=True,
-                        height=min(400, len(not_mm_fleet)*38+50),
+                        "> **For warehouse team:** These parts were called in every aircraft "
+                        "in this workscope. Stock them before the next maintenance event starts "
+                        "to avoid AOG delays. Sorted by weighted score (highest fleet-wide "
+                        "demand first)."
                     )
 
-                    # Bar chart of top 20
-                    import plotly.express as px
-                    top20 = not_mm_fleet.head(20).rename(columns=rename_map)
-                    fig = px.bar(
-                        top20,
-                        x="Weighted Score",
-                        y="Material Description",
-                        orientation="h",
-                        color="Total Occurrence",
-                        color_continuous_scale="Teal",
-                        title="Priority parts — all aircraft, not min-maxed (sorted by score)",
-                        labels={"Total Occurrence": "# AC"},
-                        height=max(350, len(top20)*28),
-                    )
-                    fig.update_layout(
-                        yaxis=dict(autorange="reversed", tickfont_size=10),
-                        paper_bgcolor="rgba(0,0,0,0)",
-                        plot_bgcolor="rgba(0,0,0,0)",
-                        margin=dict(l=280, r=20, t=50, b=30),
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                    # Sub-highlight not-yet-min-maxed within fleet-wide
+                    not_mm_fleet = all_ac_parts[all_ac_parts["Min-Maxed?"] == "❌ No"]
+                    already_mm   = all_ac_parts[all_ac_parts["Min-Maxed?"] == "✅ Yes"]
+
+                    pp1, pp2, pp3 = st.columns(3)
+                    pp1.metric("Fleet-wide parts",        len(all_ac_parts))
+                    pp2.metric("🎯 Not yet min-maxed",    len(not_mm_fleet),
+                               help="Highest priority — used in all aircraft but no stock plan yet")
+                    pp3.metric("✅ Already min-maxed",    len(already_mm))
+
+                    if not not_mm_fleet.empty:
+                        st.markdown(
+                            f"#### 🎯 Top priority: {len(not_mm_fleet)} parts — "
+                            "fleet-wide demand, **no min-max plan yet**"
+                        )
+                        pp_display = not_mm_fleet.rename(columns={
+                            c: c.replace("qty_","") for c in not_mm_fleet.columns
+                        })
+                        disp_pp_cols = [c for c in ["Part Number","Material Description","UOM","Type",
+                                                     "Total Occurrence","Grand Total","Weighted Score",
+                                                     "Min-Maxed?"] if c in pp_display.columns]
+                        st.dataframe(
+                            pp_display[disp_pp_cols],
+                            use_container_width=True,
+                            height=min(420, len(not_mm_fleet)*38+50),
+                        )
+                        fig_pp = px.bar(
+                            not_mm_fleet.head(20).rename(columns={
+                                c: c.replace("qty_","") for c in not_mm_fleet.columns
+                            }),
+                            x="Weighted Score",
+                            y="Material Description",
+                            orientation="h",
+                            color="Total Occurrence",
+                            color_continuous_scale="Teal",
+                            title="Pre-provision priority: fleet-wide, not min-maxed (top 20 by score)",
+                            labels={"Total Occurrence": "# Aircraft"},
+                            height=max(350, min(len(not_mm_fleet), 20)*28),
+                        )
+                        fig_pp.update_layout(
+                            yaxis=dict(autorange="reversed", tickfont_size=10),
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            margin=dict(l=280, r=20, t=50, b=30),
+                        )
+                        st.plotly_chart(fig_pp, use_container_width=True)
+
+                    if not already_mm.empty:
+                        with st.expander(f"✅ Already min-maxed ({len(already_mm)} parts) — verify stock levels before event"):
+                            mm_display = already_mm.rename(columns={
+                                c: c.replace("qty_","") for c in already_mm.columns
+                            })
+                            disp_mm_cols = [c for c in ["Part Number","Material Description","UOM",
+                                                         "Total Occurrence","Grand Total","Weighted Score",
+                                                         "Reorder Point","Max Level"] if c in mm_display.columns]
+                            st.dataframe(mm_display[disp_mm_cols], use_container_width=True)
 
         # ── Downloads + Save ──────────────────────────────────────────────
         st.markdown("---")
@@ -650,6 +644,7 @@ if page == "🔬 New analysis":
                             workscope=workscope or "",
                             ac_type=ac_type or "",
                             notes=notes or "",
+                            workscope_table=workscope_table if not workscope_table.empty else None,
                         )
                     if run_id:
                         st.success(f"✅ Saved! Run ID: `{run_id[:8]}…`")
@@ -691,56 +686,328 @@ elif page == "📂 Run history":
     else:
         st.markdown(f"**{len(history)} runs saved**")
 
-        for _, run in history.iterrows():
-            with st.expander(
-                f"**{run.get('workscope','—')}** · "
-                f"{run.get('ac_type','—')} · "
-                f"{run.get('aircraft','—')} · "
-                f"{run.get('created_at','—')}"
-            ):
-                r1, r2, r3, r4, r5 = st.columns(5)
-                r1.metric("Total NRCs",       run.get("total_nrcs",0))
-                r2.metric("Clusters",          run.get("n_clusters",0))
-                r3.metric("Fleet-wide",        run.get("n_fleet_wide",0))
-                r4.metric("Aircraft",          run.get("aircraft","—"))
-                r5.metric("Date",              run.get("created_at","—"))
+        # Run selector
+        run_labels = (
+            history["created_at"].astype(str) + "  ·  " +
+            history["workscope"].fillna("—") + "  ·  " +
+            history["ac_type"].fillna("—") + "  ·  " +
+            history["aircraft"].fillna("—")
+        ).tolist()
+        sel_label = st.selectbox("Select a run to view", run_labels, index=0)
+        run_row   = history.iloc[run_labels.index(sel_label)]
+        run_id    = run_row["id"]
 
-                if run.get("notes"):
-                    st.markdown(f"*{run['notes']}*")
+        st.markdown("---")
 
-                # Load defect scores for this run
-                run_scores = load_run_scores(run["id"])
-                if not run_scores.empty:
-                    st.markdown("**Defect scores:**")
-                    display_cols = [c for c in ["location","damage_type","tier","score",
-                                                "total_count","projects_count","avg_mhrs"]
-                                    if c in run_scores.columns]
-                    st.dataframe(
-                        run_scores[display_cols].head(20),
-                        use_container_width=True, height=280,
+        # KPIs
+        h1, h2, h3, h4, h5 = st.columns(5)
+        h1.metric("Total NRCs",    run_row.get("total_nrcs", 0))
+        h2.metric("Clusters",      run_row.get("n_clusters", 0))
+        h3.metric("Fleet-wide",    run_row.get("n_fleet_wide", 0))
+        h4.metric("Aircraft",      run_row.get("aircraft", "—"))
+        h5.metric("Date",          run_row.get("created_at", "—"))
+
+        if run_row.get("notes"):
+            st.markdown(f"*{run_row['notes']}*")
+
+        st.markdown("---")
+
+        # Load data for this run
+        with st.spinner("Loading run data…"):
+            run_scores  = load_run_scores(run_id)
+            run_ws      = load_workscope_materials(run_id)
+
+        n_projects = len(run_row.get("aircraft","").split(", ")) if run_row.get("aircraft") else 1
+
+        # ── History tabs ────────────────────────────────────────────────────
+        hist_tab_names = ["📊 Ranked", "🌍 Fleet-wide", "🔥 Manhours", "📈 Score", "📋 Data"]
+        if not run_ws.empty:
+            hist_tab_names.append("📋 Workscope materials")
+
+        hist_tabs = st.tabs(hist_tab_names)
+        ht_ranked, ht_fleet, ht_mhrs, ht_score, ht_data = hist_tabs[:5]
+        ht_ws = hist_tabs[5] if len(hist_tabs) > 5 else None
+
+        if run_scores.empty:
+            for t in hist_tabs[:5]:
+                with t:
+                    st.info("No defect scores saved for this run.")
+        else:
+            # ── Ranked tab ────────────────────────────────────────────────
+            with ht_ranked:
+                st.markdown("#### Defects by weighted commonality score")
+                tf = st.radio("Tier", ["All","Fleet-wide","Common","Isolated"],
+                              horizontal=True, key="hist_tier_ranked")
+                filt = run_scores if tf == "All" else run_scores[run_scores["tier"] == tf]
+                if not filt.empty:
+                    fig_r = px.bar(
+                        filt.head(25).sort_values("score"),
+                        x="score", y=filt.head(25).sort_values("score").apply(
+                            lambda r: f"{r['location']} — {r['damage_type']}", axis=1),
+                        orientation="h", color="tier",
+                        color_discrete_map={
+                            "Fleet-wide":"#5DCAA5","Common":"#85B7EB","Isolated":"#FAC775"
+                        },
+                        title="Top 25 defects by score",
+                        labels={"x":"Score","y":""},
+                        height=max(380, min(len(filt),25)*28),
                     )
+                    fig_r.update_layout(
+                        yaxis=dict(tickfont_size=10),
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        margin=dict(l=280, r=20, t=50, b=30), showlegend=True,
+                    )
+                    st.plotly_chart(fig_r, use_container_width=True)
 
-                # Load materials for this run
-                run_mats = load_run_materials(run["id"])
-                if not run_mats.empty:
-                    st.markdown("**Pre-provision materials:**")
-                    mat_cols = [c for c in ["part_number","material_description","uom",
-                                            "ac_count","total_qty","defects","ac_list"]
-                                if c in run_mats.columns]
-                    st.dataframe(run_mats[mat_cols].head(20), use_container_width=True, height=240)
+                    # Tier donut
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        tier_counts = run_scores["tier"].value_counts().reset_index()
+                        tier_counts.columns = ["tier","count"]
+                        fig_donut = px.pie(
+                            tier_counts, names="tier", values="count",
+                            color="tier", hole=0.55,
+                            color_discrete_map={
+                                "Fleet-wide":"#5DCAA5","Common":"#85B7EB","Isolated":"#FAC775"
+                            },
+                            title="Defect tier distribution",
+                        )
+                        fig_donut.update_layout(paper_bgcolor="rgba(0,0,0,0)")
+                        st.plotly_chart(fig_donut, use_container_width=True)
 
-                # Download links
-                dl1, dl2, del_col = st.columns([2, 2, 1])
-                if run.get("excel_url"):
-                    dl1.markdown(f"[⬇️ Download Excel]({run['excel_url']})")
-                if run.get("pdf_url"):
-                    dl2.markdown(f"[⬇️ Download PDF]({run['pdf_url']})")
+            # ── Fleet-wide tab ────────────────────────────────────────────
+            with ht_fleet:
+                fleet_h = run_scores[run_scores["tier"] == "Fleet-wide"]
+                if fleet_h.empty:
+                    st.info("No fleet-wide defects in this run.")
+                else:
+                    st.markdown(f"#### {len(fleet_h)} fleet-wide defects")
+                    for _, row in fleet_h.iterrows():
+                        with st.expander(
+                            f"**{row['location']} — {row['damage_type']}**"
+                            f"  |  Score: {row['score']:.3f}"
+                            f"  |  {int(row['total_count'])} NRCs"
+                            f"  |  {row['avg_mhrs']:.1f}h avg"
+                        ):
+                            fc1, fc2, fc3 = st.columns(3)
+                            fc1.metric("Total NRCs",     int(row["total_count"]))
+                            fc2.metric("Aircraft count", int(row["projects_count"]))
+                            fc3.metric("Avg manhours",   f"{row['avg_mhrs']:.1f}h")
 
-                with del_col:
-                    if st.button("🗑️ Delete", key=f"del_{run['id']}"):
-                        if delete_run(run["id"]):
-                            st.success("Deleted.")
-                            st.rerun()
+                    st.markdown("---")
+                    fig_fleet = px.bar(
+                        fleet_h.sort_values("score", ascending=False).head(20),
+                        x="score",
+                        y=fleet_h.sort_values("score", ascending=False).head(20).apply(
+                            lambda r: f"{r['location']} — {r['damage_type']}", axis=1),
+                        orientation="h", color="score",
+                        color_continuous_scale="Teal",
+                        title="Fleet-wide defects — ranked by score",
+                        height=max(350, min(len(fleet_h),20)*28),
+                    )
+                    fig_fleet.update_layout(
+                        yaxis=dict(autorange="reversed", tickfont_size=10),
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        margin=dict(l=280, r=20, t=50, b=30),
+                    )
+                    st.plotly_chart(fig_fleet, use_container_width=True)
+
+            # ── Manhours tab ──────────────────────────────────────────────
+            with ht_mhrs:
+                top_mh = run_scores.nlargest(25, "avg_mhrs").sort_values("avg_mhrs")
+                if not top_mh.empty:
+                    fig_mh = px.bar(
+                        top_mh,
+                        x="avg_mhrs",
+                        y=top_mh.apply(lambda r: f"{r['location']} — {r['damage_type']}", axis=1),
+                        orientation="h", color="tier",
+                        color_discrete_map={
+                            "Fleet-wide":"#5DCAA5","Common":"#85B7EB","Isolated":"#FAC775"
+                        },
+                        title="Top 25 defects by avg manhour cost",
+                        labels={"x":"Avg manhours","y":""},
+                        height=max(380, 25*28),
+                    )
+                    fig_mh.update_layout(
+                        yaxis=dict(tickfont_size=10),
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        margin=dict(l=280, r=20, t=50, b=30),
+                    )
+                    st.plotly_chart(fig_mh, use_container_width=True)
+
+                    # Bubble chart — count vs hours
+                    fleet_bub = run_scores[run_scores["tier"] == "Fleet-wide"].copy()
+                    if not fleet_bub.empty:
+                        fleet_bub["label"] = (fleet_bub["location"] + " — " +
+                                              fleet_bub["damage_type"])
+                        fig_bub = px.scatter(
+                            fleet_bub, x="total_count", y="avg_mhrs",
+                            size="score", color="score", text="label",
+                            color_continuous_scale="Teal",
+                            title="Fleet-wide — NRC count vs manhours",
+                            labels={"total_count":"NRC count","avg_mhrs":"Avg hrs"},
+                            height=420,
+                        )
+                        fig_bub.update_traces(textposition="top center", textfont_size=10)
+                        fig_bub.update_layout(
+                            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)"
+                        )
+                        st.plotly_chart(fig_bub, use_container_width=True)
+
+            # ── Score breakdown tab ───────────────────────────────────────
+            with ht_score:
+                top15 = run_scores.head(15).copy()
+                top15["label"] = top15["location"] + " — " + top15["damage_type"]
+                if not top15.empty:
+                    # Build component stacked bar from stored score
+                    # We only have total score saved; show as single bar with tier colour
+                    fig_sc = px.bar(
+                        top15.sort_values("score"),
+                        x="score", y="label",
+                        orientation="h", color="tier",
+                        color_discrete_map={
+                            "Fleet-wide":"#5DCAA5","Common":"#85B7EB","Isolated":"#FAC775"
+                        },
+                        title="Top 15 defects — total score by tier",
+                        labels={"score":"Weighted score","label":""},
+                        height=max(380, 15*32),
+                    )
+                    fig_sc.update_layout(
+                        yaxis=dict(tickfont_size=10),
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        margin=dict(l=280, r=20, t=50, b=30),
+                    )
+                    st.plotly_chart(fig_sc, use_container_width=True)
+                sc1, sc2, sc3 = st.columns(3)
+                sc1.info("**Presence · 50%**\n3/3 = 1.0 · 2/3 = 0.67 · 1/3 = 0.33")
+                sc2.info("**Frequency · 30%**\nAvg NRC rate per aircraft, normalised 0–1.")
+                sc3.info("**Manhour cost · 20%**\nAvg actual manhours, normalised 0–1.")
+
+            # ── Data tab ─────────────────────────────────────────────────
+            with ht_data:
+                st.markdown("#### Full defect score table")
+                disp_cols = [c for c in ["location","damage_type","tier","score",
+                                         "total_count","projects_count","avg_mhrs"]
+                             if c in run_scores.columns]
+                st.dataframe(run_scores[disp_cols], use_container_width=True, height=500)
+
+        # ── Workscope materials tab ────────────────────────────────────────
+        if ht_ws is not None and not run_ws.empty:
+            with ht_ws:
+                st.markdown("#### Workscope material recommendation")
+                st.markdown(
+                    "All materials called (toggle = **Y**) across the entire workscope, "
+                    "ranked by weighted score. Score = **Grand Total qty + (AC occurrence × 2)**."
+                )
+
+                ws_kpi1, ws_kpi2, ws_kpi3, ws_kpi4 = st.columns(4)
+                ws_kpi1.metric("Unique parts",          len(run_ws))
+                ws_kpi2.metric("Used in all aircraft",
+                                int((run_ws["Total Occurrence"] == n_projects).sum()))
+                ws_kpi3.metric("Not yet min-maxed ❌",
+                                int((run_ws["Min-Maxed?"] == "❌ No").sum()))
+                ws_kpi4.metric("Already min-maxed ✅",
+                                int((run_ws["Min-Maxed?"] == "✅ Yes").sum()))
+
+                # Filters
+                wf1, wf2, wf3 = st.columns(3)
+                mm_f  = wf1.selectbox("Min-Max status",
+                                      ["All","❌ Not min-maxed","✅ Already min-maxed"],
+                                      key="hist_ws_mm")
+                occ_f = wf2.selectbox("AC occurrence",
+                                      ["All", f"All {n_projects} aircraft",
+                                       f"{n_projects-1} aircraft", "1 aircraft"],
+                                      key="hist_ws_occ")
+                type_opts = ["All"] + sorted(run_ws["Type"].dropna().unique().tolist()) if "Type" in run_ws.columns else ["All"]
+                tp_f  = wf3.selectbox("Material type", type_opts, key="hist_ws_type")
+
+                wt_h = run_ws.copy()
+                if mm_f != "All":
+                    wt_h = wt_h[wt_h["Min-Maxed?"] == mm_f]
+                if occ_f == f"All {n_projects} aircraft":
+                    wt_h = wt_h[wt_h["Total Occurrence"] == n_projects]
+                elif occ_f == f"{n_projects-1} aircraft":
+                    wt_h = wt_h[wt_h["Total Occurrence"] == n_projects-1]
+                elif occ_f == "1 aircraft":
+                    wt_h = wt_h[wt_h["Total Occurrence"] == 1]
+                if tp_f != "All" and "Type" in wt_h.columns:
+                    wt_h = wt_h[wt_h["Type"] == tp_f]
+
+                st.markdown(f"Showing **{len(wt_h)}** of {len(run_ws)} materials")
+
+                def _hl_mm(val):
+                    if val == "❌ No":  return "background-color:#FFF0F0;color:#A32D2D"
+                    if val == "✅ Yes": return "background-color:#F0FFF4;color:#0F6E56"
+                    return ""
+
+                def _hl_score(val):
+                    try:
+                        v = float(val)
+                        if v >= 30: return "background-color:#E1F5EE;font-weight:600"
+                        if v >= 15: return "background-color:#E6F1FB"
+                    except: pass
+                    return ""
+
+                disp_ws_cols = [c for c in ["Part Number","Material Description","UOM","Type",
+                                             "Total Occurrence","Grand Total","Weighted Score",
+                                             "Min-Maxed?","Reorder Point","Max Level"]
+                                if c in wt_h.columns]
+                styled_ws = wt_h[disp_ws_cols].style
+                if "Min-Maxed?" in disp_ws_cols:
+                    styled_ws = styled_ws.map(_hl_mm, subset=["Min-Maxed?"])
+                if "Weighted Score" in disp_ws_cols:
+                    styled_ws = styled_ws.map(_hl_score, subset=["Weighted Score"])
+                st.dataframe(styled_ws, use_container_width=True, height=480)
+
+                # Pre-provision priority within history
+                all_ac_ws = run_ws[run_ws["Total Occurrence"] == n_projects].sort_values(
+                    "Weighted Score", ascending=False)
+                if not all_ac_ws.empty:
+                    st.markdown("---")
+                    not_mm_ws = all_ac_ws[all_ac_ws["Min-Maxed?"] == "❌ No"]
+                    st.markdown(
+                        f"### 📦 Pre-provision recommendation — "
+                        f"{len(all_ac_ws)} parts used in **all {n_projects} aircraft**"
+                    )
+                    if not not_mm_ws.empty:
+                        st.markdown(
+                            f"**🎯 {len(not_mm_ws)} not yet min-maxed** — "
+                            "highest priority for warehouse to action before the next event."
+                        )
+                        pp_cols = [c for c in ["Part Number","Material Description","UOM",
+                                               "Total Occurrence","Grand Total","Weighted Score",
+                                               "Min-Maxed?"] if c in not_mm_ws.columns]
+                        st.dataframe(not_mm_ws[pp_cols], use_container_width=True,
+                                     height=min(400, len(not_mm_ws)*38+50))
+
+                        fig_ws_pp = px.bar(
+                            not_mm_ws.head(20),
+                            x="Weighted Score", y="Material Description",
+                            orientation="h", color="Total Occurrence",
+                            color_continuous_scale="Teal",
+                            title="Pre-provision priority: fleet-wide, not min-maxed",
+                            labels={"Total Occurrence":"# Aircraft"},
+                            height=max(350, min(len(not_mm_ws),20)*28),
+                        )
+                        fig_ws_pp.update_layout(
+                            yaxis=dict(autorange="reversed", tickfont_size=10),
+                            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                            margin=dict(l=280, r=20, t=50, b=30),
+                        )
+                        st.plotly_chart(fig_ws_pp, use_container_width=True)
+
+        # Download links + delete
+        st.markdown("---")
+        dl1, dl2, del_col = st.columns([2, 2, 1])
+        if run_row.get("excel_url"):
+            dl1.markdown(f"[⬇️ Download Excel]({run_row['excel_url']})")
+        if run_row.get("pdf_url"):
+            dl2.markdown(f"[⬇️ Download PDF]({run_row['pdf_url']})")
+        with del_col:
+            if st.button("🗑️ Delete this run", type="secondary"):
+                if delete_run(run_id):
+                    st.success("Deleted.")
+                    st.rerun()
 
 
 # ════════════════════════════════════════════════════════════════════════════
