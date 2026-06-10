@@ -180,6 +180,111 @@ def _workscope_material_table(workscope_table: pd.DataFrame, top_n: int = 40) ->
     </table>"""
 
 
+def _top5_findings_table(scores: pd.DataFrame, n_projects: int) -> str:
+    """Top 5 fleet-wide findings mini-table for executive summary."""
+    fleet = scores[scores["tier"] == "Fleet-wide"].head(5) if not scores.empty else pd.DataFrame()
+    if fleet.empty:
+        return "<p style='color:#888;font-size:10px'>No fleet-wide findings.</p>"
+
+    count_cols = [c for c in fleet.columns if c.startswith("count_")]
+    rows = ""
+    for rank, (_, row) in enumerate(fleet.iterrows(), 1):
+        label = " · ".join(filter(None, [
+            str(row.get("location", "")),
+            str(row.get("sub_component", "") or ""),
+            str(row.get("damage_type", "")),
+        ]))
+        ac_dots = "".join(
+            "<span style='display:inline-block;width:10px;height:10px;border-radius:50%;"
+            f"background:{AC_COLORS[i % len(AC_COLORS)]};margin-right:3px;"
+            "opacity:" + ("1" if row.get(c, 0) else "0.15") + "'></span>"
+            for i, c in enumerate(count_cols)
+        )
+        rows += f"""
+        <tr>
+          <td style='text-align:center;font-weight:700;color:#1a3a6b;width:24px'>{rank}</td>
+          <td style='font-weight:500'>{label}</td>
+          <td style='text-align:center'>{int(row.get("total_count", 0))}</td>
+          <td style='text-align:center'>{row.get("avg_mhrs", 0):.1f}h</td>
+          <td style='text-align:center'>{ac_dots}</td>
+          <td style='text-align:right;font-weight:600;color:#0F6E56'>{row.get("score", 0):.3f}</td>
+        </tr>"""
+
+    return f"""
+    <table style='width:100%;border-collapse:collapse;font-size:10px'>
+      <thead>
+        <tr style='background:#0F6E56;color:white'>
+          <th style='padding:5px 7px;width:24px'>#</th>
+          <th style='padding:5px 7px;text-align:left'>Finding</th>
+          <th style='padding:5px 7px;text-align:center'>NRCs</th>
+          <th style='padding:5px 7px;text-align:center'>Avg hrs</th>
+          <th style='padding:5px 7px;text-align:center'>Aircraft</th>
+          <th style='padding:5px 7px;text-align:right'>Score</th>
+        </tr>
+      </thead>
+      <tbody>{rows}</tbody>
+    </table>"""
+
+
+def _top5_minmax_table(workscope_table: pd.DataFrame, n_projects: int) -> str:
+    """Top 5 recommended materials for min-max on executive summary."""
+    if workscope_table.empty:
+        return "<p style='color:#888;font-size:10px'>No material data uploaded.</p>"
+
+    # Priority: used in all ACs + not yet min-maxed, ranked by Weighted Score
+    df = workscope_table.copy()
+    fleet_not_mm = df[
+        (df["Total Occurrence"] == n_projects) & (df.get("Min-Maxed?", pd.Series(dtype=str)) == "❌ No")
+    ]
+    # Fill up to 5 with high-score non-fleet parts if needed
+    remainder = df[~df.index.isin(fleet_not_mm.index) & (df.get("Min-Maxed?", pd.Series(dtype=str)) == "❌ No")]
+    candidates = pd.concat([fleet_not_mm, remainder]).head(5)
+
+    if candidates.empty:
+        # Fall back to top-scored parts if nothing is flagged not-min-maxed
+        candidates = df.head(5)
+
+    rows = ""
+    for rank, (_, row) in enumerate(candidates.iterrows(), 1):
+        occ      = int(row.get("Total Occurrence", 0))
+        occ_tag  = (
+            f"<span style='background:#E1F5EE;color:#0F6E56;padding:1px 6px;"
+            f"border-radius:4px;font-size:9px;font-weight:600'>All {n_projects} AC</span>"
+            if occ == n_projects else
+            f"<span style='background:#E6F1FB;color:#185FA5;padding:1px 6px;"
+            f"border-radius:4px;font-size:9px'>{occ} AC</span>"
+        )
+        mm_val   = row.get("Min-Maxed?", "—")
+        mm_style = "color:#C0392B;font-weight:700" if mm_val == "❌ No" else \
+                   "color:#0F6E56;font-weight:700" if mm_val == "✅ Yes" else "color:#999"
+        rows += f"""
+        <tr>
+          <td style='text-align:center;font-weight:700;color:#185FA5;width:24px'>{rank}</td>
+          <td style='font-family:monospace;font-size:9px'>{row.get("Part Number","")}</td>
+          <td>{row.get("Material Description","")}</td>
+          <td style='text-align:center'>{row.get("UOM","")}</td>
+          <td style='text-align:center'>{occ_tag}</td>
+          <td style='text-align:center;font-weight:600;color:#1a3a6b'>{row.get("Weighted Score",0)}</td>
+          <td style='text-align:center;{mm_style}'>{mm_val}</td>
+        </tr>"""
+
+    return f"""
+    <table style='width:100%;border-collapse:collapse;font-size:10px'>
+      <thead>
+        <tr style='background:#185FA5;color:white'>
+          <th style='padding:5px 7px;width:24px'>#</th>
+          <th style='padding:5px 7px;text-align:left'>Part Number</th>
+          <th style='padding:5px 7px;text-align:left'>Description</th>
+          <th style='padding:5px 7px;text-align:center'>UOM</th>
+          <th style='padding:5px 7px;text-align:center'>AC Occurrence</th>
+          <th style='padding:5px 7px;text-align:center'>Score</th>
+          <th style='padding:5px 7px;text-align:center'>Min-Maxed?</th>
+        </tr>
+      </thead>
+      <tbody>{rows}</tbody>
+    </table>"""
+
+
 def build_html_report(
     df: pd.DataFrame,
     scores: pd.DataFrame,
@@ -454,6 +559,33 @@ def build_html_report(
       &nbsp;&nbsp;|&nbsp;&nbsp;
       <strong>Material scoring:</strong>
       Weighted Score = Grand Total Calls + (AC Occurrence × 2)
+    </div>
+
+    <!-- TOP 5 SPLIT PANEL -->
+    <div style='display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:4px'>
+
+      <div>
+        <div style='font-size:11px;font-weight:700;color:#0F6E56;
+                    border-left:3px solid #0F6E56;padding-left:8px;margin-bottom:6px'>
+          🔍 Top 5 Common Findings
+        </div>
+        <p style='font-size:9px;color:#888;margin-bottom:6px'>
+          Fleet-wide defects ranked by weighted score — found in all {len(projects)} aircraft
+        </p>
+        {_top5_findings_table(scores, len(projects))}
+      </div>
+
+      <div>
+        <div style='font-size:11px;font-weight:700;color:#185FA5;
+                    border-left:3px solid #185FA5;padding-left:8px;margin-bottom:6px'>
+          🔩 Top 5 Recommended for Min-Max
+        </div>
+        <p style='font-size:9px;color:#888;margin-bottom:6px'>
+          Highest-priority parts not yet min-maxed, prioritised by AC occurrence + score
+        </p>
+        {_top5_minmax_table(workscope_table, len(projects))}
+      </div>
+
     </div>
   </div>
 
