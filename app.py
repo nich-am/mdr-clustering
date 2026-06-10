@@ -479,8 +479,14 @@ if page == "🔬 New analysis":
                     except: pass
                     return ""
 
-                qty_ac_cols = [c for c in wt.columns if c.startswith("qty_")]
-                rename_map  = {c: c.replace("qty_","") for c in qty_ac_cols}
+                # calls_ cols = order-call counts per AC (used for scoring)
+                # qty_   cols = total quantity requested per AC (reference only)
+                call_ac_cols = [c for c in wt.columns if c.startswith("calls_")]
+                qty_ac_cols  = [c for c in wt.columns if c.startswith("qty_")]
+                rename_map   = {
+                    **{c: c.replace("calls_","") + " (calls)" for c in call_ac_cols},
+                    **{c: c.replace("qty_","")   + " (qty)"   for c in qty_ac_cols},
+                }
                 wt_display  = wt.rename(columns=rename_map)
 
                 styled = wt_display.style \
@@ -488,11 +494,14 @@ if page == "🔬 New analysis":
                     .map(highlight_score, subset=["Weighted Score"])
 
                 # Smart number format: hide decimals when whole, show up to 2dp otherwise
-                renamed_ac_cols = [c.replace("qty_","") for c in qty_ac_cols]
-                num_cols = renamed_ac_cols + ["Grand Total","Weighted Score","Reorder Point","Max. level"]
-                col_cfg  = {
+                renamed_num_cols = (
+                    [c.replace("calls_","") + " (calls)" for c in call_ac_cols] +
+                    [c.replace("qty_","")   + " (qty)"   for c in qty_ac_cols] +
+                    ["Grand Total","Weighted Score","Reorder Point","Max. level"]
+                )
+                col_cfg = {
                     c: st.column_config.NumberColumn(format="%g")
-                    for c in num_cols if c in wt_display.columns
+                    for c in renamed_num_cols if c in wt_display.columns
                 }
 
                 st.dataframe(styled, width='stretch', height=520, column_config=col_cfg)
