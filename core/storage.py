@@ -2,35 +2,61 @@
 core/storage.py
 ---------------
 Supabase integration for saving and loading pipeline run history.
-
-Tables used:
-  - runs                    : one row per pipeline run (metadata + file URLs)
-  - defect_scores           : EDA scores per run
-  - material_recommendations: pre-provision list per run
-
-Storage bucket:
-  - nrc-reports             : Excel and PDF files
+Uses direct HTTP for storage uploads (supabase-py v2 compatibility).
 """
 
-import io
 import uuid
-from datetime import datetime
 from typing import Optional
 
+import requests
 import pandas as pd
 import streamlit as st
+
+
+def _get_creds():
+    """Return (url, key) from Streamlit secrets, URL stripped of trailing slash."""
+    url = st.secrets["supabase"]["url"].rstrip("/")
+    key = st.secrets["supabase"]["key"]
+    return url, key
 
 
 def _client():
     """Create Supabase client from Streamlit secrets."""
     try:
         from supabase import create_client
-        url = st.secrets["supabase"]["url"].rstrip("/")   # fix PGRST125
-        key = st.secrets["supabase"]["key"]
+        url, key = _get_creds()
         return create_client(url, key)
     except Exception as e:
         st.error(f"Supabase connection failed: {e}")
         return None
+
+
+def _upload_file(run_id: str, filename: str, data: bytes, content_type: str) -> str:
+    """
+    Upload a file to the nrc-reports bucket via direct REST API.
+    Returns the public URL string, or "" on failure.
+    """
+    url, key = _get_creds()
+    path = f"{run_id}/{filename}"
+    endpoint = f"{url}/storage/v1/object/nrc-reports/{path}"
+
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": content_type,
+        "x-upsert": "true",          # overwrite if exists
+    }
+
+    try:
+        resp = requests.post(endpoint, headers=headers, data=data, timeout=30)
+        if resp.status_code in (200, 201):
+            public_url = f"{url}/storage/v1/object/public/nrc-reports/{path}"
+            return public_url
+        else:
+            st.warning(f"Could not upload {filename}: HTTP {resp.status_code} — {resp.text[:200]}")
+            return ""
+    except Exception as e:
+        st.warning(f"Could not upload {filename}: {e}")
+        return ""
 
 
 # ── Save a run ─────────────────────────────────────────────────────────────
@@ -52,37 +78,21 @@ def save_run(
     if sb is None:
         return None
 
-    run_id    = str(uuid.uuid4())
-    projects  = sorted(df["project"].unique().tolist())
-    n_fleet   = int((scores["tier"] == "Fleet-wide").sum()) if not scores.empty else 0
+    run_id     = str(uuid.uuid4())
+    projects   = sorted(df["project"].unique().tolist())
+    n_fleet    = int((scores["tier"] == "Fleet-wide").sum()) if not scores.empty else 0
     n_clusters = int(df[df["cluster_id"] != -1]["cluster_id"].nunique())
 
     # ── Upload Excel ───────────────────────────────────────────────────────
-    excel_path = f"{run_id}/nrc_results.xlsx"
-    excel_url  = ""
-    try:
-        sb.storage.from_("nrc-reports").upload(
-            excel_path,
-            excel_bytes,
-            file_options={"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
-        )
-        excel_url = sb.storage.from_("nrc-reports").get_public_url(excel_path)
-    except Exception as e:
-        st.warning(f"Could not upload Excel: {e}")
+    excel_url = _upload_file(
+        run_id, "nrc_results.xlsx", excel_bytes,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
     # ── Upload PDF ─────────────────────────────────────────────────────────
     pdf_url = ""
     if pdf_bytes:
-        pdf_path = f"{run_id}/nrc_report.pdf"
-        try:
-            sb.storage.from_("nrc-reports").upload(
-                pdf_path,
-                pdf_bytes,
-                file_options={"content-type": "application/pdf"},
-            )
-            pdf_url = sb.storage.from_("nrc-reports").get_public_url(pdf_path)
-        except Exception as e:
-            st.warning(f"Could not upload PDF: {e}")
+        pdf_url = _upload_file(run_id, "nrc_report.pdf", pdf_bytes, "application/pdf")
 
     # ── Insert run row ─────────────────────────────────────────────────────
     try:
@@ -117,7 +127,6 @@ def save_run(
                 "avg_mhrs":       float(row.get("avg_mhrs", 0)),
             })
         try:
-            # Insert in batches of 100
             for i in range(0, len(score_rows), 100):
                 sb.table("defect_scores").insert(score_rows[i:i+100]).execute()
         except Exception as e:
@@ -150,10 +159,7 @@ def save_run(
 
 # ── Load run history list ──────────────────────────────────────────────────
 def load_run_history() -> pd.DataFrame:
-    """
-    Load all past runs as a DataFrame, newest first.
-    Returns empty DataFrame on failure.
-    """
+    """Load all past runs as a DataFrame, newest first."""
     sb = _client()
     if sb is None:
         return pd.DataFrame()
@@ -222,13 +228,11 @@ def delete_run(run_id: str) -> bool:
     if sb is None:
         return False
     try:
-        # Delete files from storage
         for fname in ["nrc_results.xlsx", "nrc_report.pdf"]:
             try:
                 sb.storage.from_("nrc-reports").remove([f"{run_id}/{fname}"])
             except Exception:
                 pass
-        # Delete DB rows (cascade handles child tables)
         sb.table("runs").delete().eq("id", run_id).execute()
         return True
     except Exception as e:
@@ -238,10 +242,7 @@ def delete_run(run_id: str) -> bool:
 
 # ── Compare two runs: defect score delta ──────────────────────────────────
 def compare_runs(run_id_a: str, run_id_b: str) -> pd.DataFrame:
-    """
-    Side-by-side comparison of defect scores between two runs.
-    Returns DataFrame with score_a, score_b, delta columns.
-    """
+    """Side-by-side comparison of defect scores between two runs."""
     scores_a = load_run_scores(run_id_a).rename(
         columns={"score": "score_a", "total_count": "count_a"}
     )
@@ -259,10 +260,10 @@ def compare_runs(run_id_a: str, run_id_b: str) -> pd.DataFrame:
         how="outer",
     ).fillna(0)
 
-    merged["delta"]        = (merged["score_b"] - merged["score_a"]).round(4)
-    merged["delta_label"]  = merged["delta"].apply(
+    merged["delta"]       = (merged["score_b"] - merged["score_a"]).round(4)
+    merged["delta_label"] = merged["delta"].apply(
         lambda d: f"▲ {d:+.3f}" if d > 0.02 else (f"▼ {d:+.3f}" if d < -0.02 else "≈ stable")
     )
-    merged["defect"]       = merged["location"] + " — " + merged["damage_type"]
+    merged["defect"]      = merged["location"] + " — " + merged["damage_type"]
     merged = merged.sort_values("score_b", ascending=False).reset_index(drop=True)
     return merged
