@@ -609,7 +609,7 @@ if page == "🔬 New analysis":
         with st.spinner("Generating PDF…"):
             pdf_bytes = generate_pdf(
                 df, scores,
-                top_parts if not top_parts.empty else pd.DataFrame(),
+                workscope_table if not workscope_table.empty else pd.DataFrame(),
                 workscope or "—",
                 ac_type   or "—",
                 notes     or "",
