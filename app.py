@@ -235,10 +235,12 @@ if page == "🔬 New analysis":
         if has_workscope and not rop_db.empty:
             from core.materials import workscope_table_stats
             stats = workscope_table_stats(workscope_table, len(projects))
+            n_matched = int((workscope_table["Min-Maxed?"] != "—").sum()) if "Min-Maxed?" in workscope_table.columns else 0
             st.info(
                 f"📦 **{stats.get('fleet_wide_parts',0)}** parts used in all aircraft · "
                 f"❌ **{stats.get('not_min_maxed',0)}** not yet min-maxed · "
-                f"✅ **{stats.get('already_min_maxed',0)}** already min-maxed"
+                f"✅ **{stats.get('already_min_maxed',0)}** already min-maxed · "
+                f"🔍 **{n_matched}** of {stats.get('total_unique_parts',0)} parts matched in Non-ROP DB"
             )
 
         ac_colors = ["#5DCAA5","#85B7EB","#FAC775","#D85A30","#534AB7","#D4537E"]
@@ -465,15 +467,15 @@ if page == "🔬 New analysis":
 
                 # Colour cells by Min-Max status
                 def highlight_mm(val):
-                    if val == "❌ No":  return "background-color:#FFF0F0;color:#A32D2D"
-                    if val == "✅ Yes": return "background-color:#F0FFF4;color:#0F6E56"
+                    if val == "❌ No":  return "color:#FF6B6B;font-weight:600"
+                    if val == "✅ Yes": return "color:#5DCAA5;font-weight:600"
                     return ""
 
                 def highlight_score(val):
                     try:
                         v = float(val)
-                        if v >= 30: return "background-color:#E1F5EE;font-weight:600"
-                        if v >= 15: return "background-color:#E6F1FB"
+                        if v >= 30: return "font-weight:700;color:#5DCAA5"
+                        if v >= 15: return "font-weight:600;color:#85B7EB"
                     except: pass
                     return ""
 
@@ -936,15 +938,15 @@ elif page == "📂 Run history":
                 st.markdown(f"Showing **{len(wt_h)}** of {len(run_ws)} materials")
 
                 def _hl_mm(val):
-                    if val == "❌ No":  return "background-color:#FFF0F0;color:#A32D2D"
-                    if val == "✅ Yes": return "background-color:#F0FFF4;color:#0F6E56"
+                    if val == "❌ No":  return "color:#FF6B6B;font-weight:600"
+                    if val == "✅ Yes": return "color:#5DCAA5;font-weight:600"
                     return ""
 
                 def _hl_score(val):
                     try:
                         v = float(val)
-                        if v >= 30: return "background-color:#E1F5EE;font-weight:600"
-                        if v >= 15: return "background-color:#E6F1FB"
+                        if v >= 30: return "font-weight:700;color:#5DCAA5"
+                        if v >= 15: return "font-weight:600;color:#85B7EB"
                     except: pass
                     return ""
 
