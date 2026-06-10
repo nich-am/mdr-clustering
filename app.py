@@ -11,6 +11,7 @@ Run with:
 import io
 import sys
 import os
+from datetime import timezone, timedelta
 sys.path.insert(0, os.path.dirname(__file__))
 
 import streamlit as st
@@ -32,6 +33,20 @@ from core.charts import (
     frequency_heatmap, manhour_bar, score_components_bar,
     tier_donut, damage_distribution, cluster_size_dist,
 )
+
+# ── Timezone helper ───────────────────────────────────────────────────────
+def _to_wib(ts_str: str) -> str:
+    """Convert a UTC timestamp string to WIB (GMT+7) for display."""
+    try:
+        import pandas as pd
+        ts = pd.Timestamp(ts_str)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        ts_wib = ts.astimezone(timezone(timedelta(hours=7)))
+        return ts_wib.strftime("%Y-%m-%d %H:%M WIB")
+    except Exception:
+        return str(ts_str)
+
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -709,7 +724,7 @@ elif page == "📂 Run history":
 
         # Run selector
         run_labels = (
-            history["created_at"].astype(str) + "  ·  " +
+            history["created_at"].apply(_to_wib) + "  ·  " +
             history["workscope"].fillna("—") + "  ·  " +
             history["ac_type"].fillna("—") + "  ·  " +
             history["aircraft"].fillna("—")
@@ -726,7 +741,7 @@ elif page == "📂 Run history":
         h2.metric("Clusters",      run_row.get("n_clusters", 0))
         h3.metric("Fleet-wide",    run_row.get("n_fleet_wide", 0))
         h4.metric("Aircraft",      run_row.get("aircraft", "—"))
-        h5.metric("Date",          run_row.get("created_at", "—"))
+        h5.metric("Date",          _to_wib(str(run_row.get("created_at", "—"))))
 
         if run_row.get("notes"):
             st.markdown(f"*{run_row['notes']}*")
@@ -1051,7 +1066,7 @@ elif page == "🔁 Compare runs":
         st.info("Need at least 2 saved runs to compare.")
     else:
         run_labels = (
-            history["created_at"].astype(str) + " · " +
+            history["created_at"].apply(_to_wib) + " · " +
             history["workscope"].fillna("—") + " · " +
             history["aircraft"].fillna("—")
         ).tolist()
