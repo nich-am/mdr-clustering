@@ -231,19 +231,26 @@ def build_workscope_material_table(
     ).round(1)
 
     # ── Join ROP database ──────────────────────────────────────────────────
-    if rop_db is not None and not rop_db.empty:
-        # ROP key = Material column (PN:SLOC format), same as MRM Part Number
+    if rop_db is not None and not rop_db.empty and "Material" in rop_db.columns:
+        # ROP Material (col C) = "PN:VendorCode" — same format as MRM Part Number (col D)
+        # Normalise both sides: strip whitespace, uppercase for case-insensitive match
         rop_lookup = rop_db[["Material","min_maxed","Reorder Point","Max. level"]].copy()
-        rop_lookup = rop_lookup.rename(columns={"Material": "Part Number"})
-        rop_lookup = rop_lookup.drop_duplicates(subset=["Part Number"])
+        rop_lookup["_key"] = rop_lookup["Material"].astype(str).str.strip().str.upper()
+        rop_lookup = rop_lookup.drop_duplicates(subset=["_key"])
 
-        merged = merged.merge(rop_lookup, on="Part Number", how="left")
+        merged["_key"] = merged["Part Number"].astype(str).str.strip().str.upper()
+
+        merged = merged.merge(
+            rop_lookup[["_key","min_maxed","Reorder Point","Max. level"]],
+            on="_key", how="left"
+        )
+
         merged["Min-Maxed?"] = merged["min_maxed"].map(
             {True: "✅ Yes", False: "❌ No"}
         ).fillna("—")
         merged["Reorder Point"] = merged["Reorder Point"].fillna(0)
         merged["Max. level"]    = merged["Max. level"].fillna(0)
-        merged = merged.drop(columns=["min_maxed"], errors="ignore")
+        merged = merged.drop(columns=["min_maxed","_key"], errors="ignore")
     else:
         merged["Min-Maxed?"]    = "—"
         merged["Reorder Point"] = 0
