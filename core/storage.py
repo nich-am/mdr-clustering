@@ -69,6 +69,7 @@ def save_run(
     workscope: str,
     ac_type: str,
     notes: str,
+    workscope_table: Optional[pd.DataFrame] = None,
 ) -> Optional[str]:
     """
     Save a complete pipeline run to Supabase.
@@ -154,6 +155,29 @@ def save_run(
         except Exception as e:
             st.warning(f"Could not save material recommendations: {e}")
 
+    # ── Insert workscope materials ─────────────────────────────────────────
+    if workscope_table is not None and not workscope_table.empty:
+        ws_rows = []
+        for _, row in workscope_table.iterrows():
+            ws_rows.append({
+                "run_id":               run_id,
+                "part_number":          str(row.get("Part Number", "")),
+                "material_description": str(row.get("Material Description", "")),
+                "uom":                  str(row.get("UOM", "")),
+                "material_type":        str(row.get("Type", "")),
+                "total_occurrence":     int(row.get("Total Occurrence", 0)),
+                "grand_total":          float(row.get("Grand Total", 0)),
+                "weighted_score":       float(row.get("Weighted Score", 0)),
+                "min_maxed":            str(row.get("Min-Maxed?", "")),
+                "reorder_point":        float(row.get("Reorder Point", 0) or 0),
+                "max_level":            float(row.get("Max Level", 0) or 0),
+            })
+        try:
+            for i in range(0, len(ws_rows), 100):
+                sb.table("workscope_materials").insert(ws_rows[i:i+100]).execute()
+        except Exception as e:
+            st.warning(f"Could not save workscope materials: {e}")
+
     return run_id
 
 
@@ -219,6 +243,41 @@ def load_run_materials(run_id: str) -> pd.DataFrame:
         return pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
     except Exception as e:
         st.warning(f"Could not load materials: {e}")
+        return pd.DataFrame()
+
+
+# ── Load workscope materials for a specific run ───────────────────────────
+def load_workscope_materials(run_id: str) -> pd.DataFrame:
+    sb = _client()
+    if sb is None:
+        return pd.DataFrame()
+    try:
+        resp = (
+            sb.table("workscope_materials")
+            .select("*")
+            .eq("run_id", run_id)
+            .order("weighted_score", desc=True)
+            .execute()
+        )
+        if not resp.data:
+            return pd.DataFrame()
+        df = pd.DataFrame(resp.data)
+        # Rename to display-friendly column names
+        df = df.rename(columns={
+            "part_number":          "Part Number",
+            "material_description": "Material Description",
+            "uom":                  "UOM",
+            "material_type":        "Type",
+            "total_occurrence":     "Total Occurrence",
+            "grand_total":          "Grand Total",
+            "weighted_score":       "Weighted Score",
+            "min_maxed":            "Min-Maxed?",
+            "reorder_point":        "Reorder Point",
+            "max_level":            "Max Level",
+        })
+        return df
+    except Exception as e:
+        st.warning(f"Could not load workscope materials: {e}")
         return pd.DataFrame()
 
 
