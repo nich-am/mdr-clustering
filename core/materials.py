@@ -204,15 +204,19 @@ def build_workscope_material_table(
 
     ac_regs = sorted(mrm_dict.keys())
 
-    # Aggregate qty per part per AC
+    # Aggregate per part per AC:
+    #   - call_count  = number of distinct orders that requested this part (for scoring)
+    #   - total_qty   = sum of Qty Req (for reference, kept as a separate column)
     per_ac = []
     for ac, mrm_df in mrm_dict.items():
         agg = (
             mrm_df
-            .groupby(["Part Number","Material Description","UOM","Type"])["Qty Req"]
-            .sum()
+            .groupby(["Part Number","Material Description","UOM","Type"])
+            .agg(
+                **{f"calls_{ac}": ("Order", "nunique"),
+                   f"qty_{ac}":   ("Qty Req", "sum")}
+            )
             .reset_index()
-            .rename(columns={"Qty Req": f"qty_{ac}"})
         )
         per_ac.append(agg)
 
@@ -225,18 +229,24 @@ def build_workscope_material_table(
         per_ac
     )
 
-    qty_cols = [f"qty_{ac}" for ac in ac_regs]
-    for col in qty_cols:
+    call_cols = [f"calls_{ac}" for ac in ac_regs]
+    qty_cols  = [f"qty_{ac}"   for ac in ac_regs]
+
+    for col in call_cols + qty_cols:
         if col not in merged.columns:
             merged[col] = 0
-    merged[qty_cols] = merged[qty_cols].fillna(0).round(2)
+    merged[call_cols] = merged[call_cols].fillna(0).astype(int)
+    merged[qty_cols]  = merged[qty_cols].fillna(0).round(2)
 
     # Derived columns
-    merged["Grand Total"]       = merged[qty_cols].sum(axis=1).round(2)
-    merged["Total Occurrence"]  = (merged[qty_cols] > 0).sum(axis=1)
-    merged["Weighted Score"]    = (
-        merged["Grand Total"] + merged["Total Occurrence"] * 2
-    ).round(2)
+    # Grand Total Call  = total number of order-calls across all ACs (unbiased by qty)
+    # Total Occurrence  = how many ACs called this part at least once
+    # Weighted Score    = Grand Total Call + (Total Occurrence × 2)
+    #                     heaviest weight on parts called across many ACs,
+    #                     secondary weight on repeat calls within an AC
+    merged["Grand Total"]      = merged[call_cols].sum(axis=1)
+    merged["Total Occurrence"] = (merged[call_cols] > 0).sum(axis=1)
+    merged["Weighted Score"]   = merged["Grand Total"] + merged["Total Occurrence"] * 2
 
     # ── Join ROP database ──────────────────────────────────────────────────
     if rop_db is not None and not rop_db.empty and "Material" in rop_db.columns:
@@ -287,27 +297,27 @@ def build_workscope_material_table(
     # Sort by Weighted Score descending
     merged = merged.sort_values("Weighted Score", ascending=False).reset_index(drop=True)
 
-    # Reorder columns for display
+    # Reorder columns for display:
+    #   calls_{ac} = number of orders that called this part  ← used for scoring
+    #   qty_{ac}   = total quantity requested                ← kept for reference
     front_cols = ["Part Number","Material Description","UOM","Type"]
-    ac_cols    = qty_cols
+    ac_call_cols = call_cols   # e.g. calls_PK-GLV, calls_PK-GLX, calls_PK-GLZ
+    ac_qty_cols  = qty_cols    # e.g. qty_PK-GLV,   qty_PK-GLX,   qty_PK-GLZ
     end_cols   = ["Grand Total","Total Occurrence","Weighted Score",
                   "Min-Maxed?","Reorder Point","Max. level"]
-    all_cols   = front_cols + ac_cols + end_cols
+    all_cols   = front_cols + ac_call_cols + ac_qty_cols + end_cols
     result = merged[[c for c in all_cols if c in merged.columns]].copy()
 
-    # Smart number formatting: drop .000000 → show as int; keep meaningful decimals
-    # up to 2 places with trailing zeros stripped  (e.g. 1.50 → 1.5, 12454.0 → 12454)
-    numeric_display_cols = qty_cols + ["Grand Total","Weighted Score","Reorder Point","Max. level"]
+    # Smart number formatting: whole numbers shown without decimals
+    numeric_display_cols = call_cols + qty_cols + ["Grand Total","Weighted Score","Reorder Point","Max. level"]
     for col in numeric_display_cols:
         if col not in result.columns:
             continue
         col_data = pd.to_numeric(result[col], errors="coerce")
         rounded  = col_data.round(2)
-        # If every non-null value is a whole number, store as Int64 (nullable int)
         if (rounded.dropna() == rounded.dropna().apply(lambda x: int(x))).all():
             result[col] = rounded.fillna(0).astype(int)
         else:
-            # Keep as float but strip unnecessary trailing zeros via object column
             result[col] = rounded.apply(
                 lambda x: int(x) if pd.notna(x) and x == int(x) else x
             )
