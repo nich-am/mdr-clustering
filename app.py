@@ -115,7 +115,7 @@ with st.sidebar:
         notes     = st.text_area("Notes (optional)", height=80)
 
         st.markdown("---")
-        run_btn = st.button("▶ Run analysis", type="primary", use_container_width=True)
+        run_btn = st.button("▶ Run analysis", type="primary", width='stretch')
 
     st.markdown(
         "<small style='color:gray'>GMF AeroAsia · NRC Clustering v3<br>"
@@ -270,10 +270,10 @@ if page == "🔬 New analysis":
             st.markdown("Score = **50%** presence + **30%** frequency + **20%** manhour cost")
             tf = st.radio("Tier", ["All","Fleet-wide","Common","Isolated"], horizontal=True)
             filt = scores if tf == "All" else scores[scores["tier"] == tf]
-            st.plotly_chart(ranked_bar(filt, top_n=top_n_score), use_container_width=True)
+            st.plotly_chart(ranked_bar(filt, top_n=top_n_score), width='stretch')
             c1, c2 = st.columns(2)
-            with c1: st.plotly_chart(damage_distribution(df),  use_container_width=True)
-            with c2: st.plotly_chart(tier_donut(scores),       use_container_width=True)
+            with c1: st.plotly_chart(damage_distribution(df),  width='stretch')
+            with c2: st.plotly_chart(tier_donut(scores),       width='stretch')
 
         # Fleet-wide
         with tab_fleet:
@@ -302,25 +302,25 @@ if page == "🔬 New analysis":
                             (df["location"] == row["location"]) &
                             (df["damage_type"] == row["damage_type"])
                         ][["project","Description","Skill Active","Act Mhrs"]]
-                        st.dataframe(sub.reset_index(drop=True), use_container_width=True)
+                        st.dataframe(sub.reset_index(drop=True), width='stretch')
                         if has_mrm and n_parts > 0:
                             st.markdown("**Materials:**")
                             st.dataframe(
                                 pf[["ac_reg","Order No","Part Number",
                                     "Material Description","Qty Req","UOM","Fulfillment Status"]
                                 ].reset_index(drop=True),
-                                use_container_width=True,
+                                width='stretch',
                             )
                 st.markdown("---")
-                st.plotly_chart(fleet_grouped_bar(scores, projects), use_container_width=True)
-                st.plotly_chart(frequency_heatmap(scores, top_n=top_n_score), use_container_width=True)
+                st.plotly_chart(fleet_grouped_bar(scores, projects), width='stretch')
+                st.plotly_chart(frequency_heatmap(scores, top_n=top_n_score), width='stretch')
 
         # Similarity map
         with tab_map:
             st.markdown("#### NRC similarity map")
-            st.plotly_chart(scatter_map(df, X_2d), use_container_width=True)
+            st.plotly_chart(scatter_map(df, X_2d), width='stretch')
             c1, c2 = st.columns(2)
-            with c1: st.plotly_chart(cluster_size_dist(df), use_container_width=True)
+            with c1: st.plotly_chart(cluster_size_dist(df), width='stretch')
             with c2:
                 cs = (
                     df[df["cluster_id"] != -1]
@@ -330,11 +330,11 @@ if page == "🔬 New analysis":
                     .reset_index()
                 )
                 st.markdown("**Cluster summary**")
-                st.dataframe(cs, use_container_width=True, height=280)
+                st.dataframe(cs, width='stretch', height=280)
 
         # Manhours
         with tab_mhrs:
-            st.plotly_chart(manhour_bar(scores, top_n=top_n_score), use_container_width=True)
+            st.plotly_chart(manhour_bar(scores, top_n=top_n_score), width='stretch')
             fleet_mh = scores[scores["tier"] == "Fleet-wide"].copy()
             if not fleet_mh.empty:
                 fleet_mh["label"] = fleet_mh["location"] + " — " + fleet_mh["damage_type"]
@@ -348,11 +348,11 @@ if page == "🔬 New analysis":
                 )
                 bubble.update_traces(textposition="top center", textfont_size=10)
                 bubble.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                st.plotly_chart(bubble, use_container_width=True)
+                st.plotly_chart(bubble, width='stretch')
 
         # Score breakdown
         with tab_score:
-            st.plotly_chart(score_components_bar(scores, top_n=15), use_container_width=True)
+            st.plotly_chart(score_components_bar(scores, top_n=15), width='stretch')
             c1, c2, c3 = st.columns(3)
             c1.info("**Presence · 50%**\n3/3 = 1.0 · 2/3 = 0.67 · 1/3 = 0.33")
             c2.info("**Frequency · 30%**\nAvg NRC rate per aircraft, normalised 0–1.")
@@ -371,12 +371,12 @@ if page == "🔬 New analysis":
             if sel_loc != "All": mask &= df["location"]    == sel_loc
             st.markdown(f"Showing **{mask.sum()}** NRCs")
             st.dataframe(df[mask][show_cols].reset_index(drop=True),
-                         use_container_width=True, height=380)
+                         width='stretch', height=380)
             st.markdown("---")
             sc_cols = (["defect_key","tier","total_count","projects_count","avg_mhrs","score"]
                        + [c for c in scores.columns if c.startswith("count_")])
             st.dataframe(scores[[c for c in sc_cols if c in scores.columns]],
-                         use_container_width=True, height=340)
+                         width='stretch', height=340)
 
         # Materials by defect
         if has_mrm and tab_matdef is not None:
@@ -405,7 +405,7 @@ if page == "🔬 New analysis":
                         piv["# Aircraft"] = (piv.select_dtypes("number")
                                                .drop(columns=["Total Qty"]).gt(0).sum(axis=1))
                         st.dataframe(piv.sort_values("# Aircraft", ascending=False),
-                                     use_container_width=True)
+                                     width='stretch')
 
         # ── Workscope materials tab ───────────────────────────────────────
         if has_workscope and tab_ws is not None:
@@ -483,9 +483,19 @@ if page == "🔬 New analysis":
                 rename_map  = {c: c.replace("qty_","") for c in qty_ac_cols}
                 wt_display  = wt.rename(columns=rename_map)
 
-                styled = wt_display.style                     .map(highlight_mm,    subset=["Min-Maxed?"])                     .map(highlight_score, subset=["Weighted Score"])
+                styled = wt_display.style \
+                    .map(highlight_mm,    subset=["Min-Maxed?"]) \
+                    .map(highlight_score, subset=["Weighted Score"])
 
-                st.dataframe(styled, use_container_width=True, height=520)
+                # Smart number format: hide decimals when whole, show up to 2dp otherwise
+                renamed_ac_cols = [c.replace("qty_","") for c in qty_ac_cols]
+                num_cols = renamed_ac_cols + ["Grand Total","Weighted Score","Reorder Point","Max. level"]
+                col_cfg  = {
+                    c: st.column_config.NumberColumn(format="%g")
+                    for c in num_cols if c in wt_display.columns
+                }
+
+                st.dataframe(styled, width='stretch', height=520, column_config=col_cfg)
 
                 st.markdown("---")
 
@@ -531,7 +541,7 @@ if page == "🔬 New analysis":
                                                      "Min-Maxed?"] if c in pp_display.columns]
                         st.dataframe(
                             pp_display[disp_pp_cols],
-                            use_container_width=True,
+                            width='stretch',
                             height=min(420, len(not_mm_fleet)*38+50),
                         )
                         fig_pp = px.bar(
@@ -553,7 +563,7 @@ if page == "🔬 New analysis":
                             plot_bgcolor="rgba(0,0,0,0)",
                             margin=dict(l=280, r=20, t=50, b=30),
                         )
-                        st.plotly_chart(fig_pp, use_container_width=True)
+                        st.plotly_chart(fig_pp, width='stretch')
 
                     if not already_mm.empty:
                         with st.expander(f"✅ Already min-maxed ({len(already_mm)} parts) — verify stock levels before event"):
@@ -563,7 +573,7 @@ if page == "🔬 New analysis":
                             disp_mm_cols = [c for c in ["Part Number","Material Description","UOM",
                                                          "Total Occurrence","Grand Total","Weighted Score",
                                                          "Reorder Point","Max Level"] if c in mm_display.columns]
-                            st.dataframe(mm_display[disp_mm_cols], use_container_width=True)
+                            st.dataframe(mm_display[disp_mm_cols], width='stretch')
 
         # ── Downloads + Save ──────────────────────────────────────────────
         st.markdown("---")
@@ -759,7 +769,7 @@ elif page == "📂 Run history":
                         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                         margin=dict(l=280, r=20, t=50, b=30), showlegend=True,
                     )
-                    st.plotly_chart(fig_r, use_container_width=True)
+                    st.plotly_chart(fig_r, width='stretch')
 
                     # Tier donut
                     c1, c2 = st.columns(2)
@@ -775,7 +785,7 @@ elif page == "📂 Run history":
                             title="Defect tier distribution",
                         )
                         fig_donut.update_layout(paper_bgcolor="rgba(0,0,0,0)")
-                        st.plotly_chart(fig_donut, use_container_width=True)
+                        st.plotly_chart(fig_donut, width='stretch')
 
             # ── Fleet-wide tab ────────────────────────────────────────────
             with ht_fleet:
@@ -812,7 +822,7 @@ elif page == "📂 Run history":
                         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                         margin=dict(l=280, r=20, t=50, b=30),
                     )
-                    st.plotly_chart(fig_fleet, use_container_width=True)
+                    st.plotly_chart(fig_fleet, width='stretch')
 
             # ── Manhours tab ──────────────────────────────────────────────
             with ht_mhrs:
@@ -835,7 +845,7 @@ elif page == "📂 Run history":
                         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                         margin=dict(l=280, r=20, t=50, b=30),
                     )
-                    st.plotly_chart(fig_mh, use_container_width=True)
+                    st.plotly_chart(fig_mh, width='stretch')
 
                     # Bubble chart — count vs hours
                     fleet_bub = run_scores[run_scores["tier"] == "Fleet-wide"].copy()
@@ -854,7 +864,7 @@ elif page == "📂 Run history":
                         fig_bub.update_layout(
                             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)"
                         )
-                        st.plotly_chart(fig_bub, use_container_width=True)
+                        st.plotly_chart(fig_bub, width='stretch')
 
             # ── Score breakdown tab ───────────────────────────────────────
             with ht_score:
@@ -879,7 +889,7 @@ elif page == "📂 Run history":
                         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                         margin=dict(l=280, r=20, t=50, b=30),
                     )
-                    st.plotly_chart(fig_sc, use_container_width=True)
+                    st.plotly_chart(fig_sc, width='stretch')
                 sc1, sc2, sc3 = st.columns(3)
                 sc1.info("**Presence · 50%**\n3/3 = 1.0 · 2/3 = 0.67 · 1/3 = 0.33")
                 sc2.info("**Frequency · 30%**\nAvg NRC rate per aircraft, normalised 0–1.")
@@ -891,7 +901,7 @@ elif page == "📂 Run history":
                 disp_cols = [c for c in ["location","damage_type","tier","score",
                                          "total_count","projects_count","avg_mhrs"]
                              if c in run_scores.columns]
-                st.dataframe(run_scores[disp_cols], use_container_width=True, height=500)
+                st.dataframe(run_scores[disp_cols], width='stretch', height=500)
 
         # ── Workscope materials tab ────────────────────────────────────────
         if ht_ws is not None and not run_ws.empty:
@@ -959,7 +969,7 @@ elif page == "📂 Run history":
                     styled_ws = styled_ws.map(_hl_mm, subset=["Min-Maxed?"])
                 if "Weighted Score" in disp_ws_cols:
                     styled_ws = styled_ws.map(_hl_score, subset=["Weighted Score"])
-                st.dataframe(styled_ws, use_container_width=True, height=480)
+                st.dataframe(styled_ws, width='stretch', height=480)
 
                 # Pre-provision priority within history
                 all_ac_ws = run_ws[run_ws["Total Occurrence"] == n_projects].sort_values(
@@ -979,7 +989,7 @@ elif page == "📂 Run history":
                         pp_cols = [c for c in ["Part Number","Material Description","UOM",
                                                "Total Occurrence","Grand Total","Weighted Score",
                                                "Min-Maxed?"] if c in not_mm_ws.columns]
-                        st.dataframe(not_mm_ws[pp_cols], use_container_width=True,
+                        st.dataframe(not_mm_ws[pp_cols], width='stretch',
                                      height=min(400, len(not_mm_ws)*38+50))
 
                         fig_ws_pp = px.bar(
@@ -996,7 +1006,7 @@ elif page == "📂 Run history":
                             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                             margin=dict(l=280, r=20, t=50, b=30),
                         )
-                        st.plotly_chart(fig_ws_pp, use_container_width=True)
+                        st.plotly_chart(fig_ws_pp, width='stretch')
 
         # Download links + delete
         st.markdown("---")
@@ -1102,7 +1112,7 @@ elif page == "🔁 Compare runs":
 
                 st.dataframe(
                     disp.style.map(colour_delta, subset=["Change"]),
-                    use_container_width=True,
+                    width='stretch',
                     height=500,
                 )
 
@@ -1128,4 +1138,4 @@ elif page == "🔁 Compare runs":
                         plot_bgcolor="rgba(0,0,0,0)",
                         margin=dict(l=280, r=20, t=50, b=30),
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
