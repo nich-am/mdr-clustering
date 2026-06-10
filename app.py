@@ -521,7 +521,7 @@ if page == "🔬 New analysis":
                 rename_map  = {c: c.replace("qty_","") for c in qty_ac_cols}
                 wt_display  = wt.rename(columns=rename_map)
 
-                styled = wt_display.style                     .applymap(highlight_mm,    subset=["Min-Maxed?"])                     .applymap(highlight_score, subset=["Weighted Score"])
+                styled = wt_display.style                     .map(highlight_mm,    subset=["Min-Maxed?"])                     .map(highlight_score, subset=["Weighted Score"])
 
                 st.dataframe(styled, use_container_width=True, height=520)
 
@@ -832,7 +832,7 @@ elif page == "🔁 Compare runs":
                                 "Score B","NRCs B","Change"]
 
                 st.dataframe(
-                    disp.style.applymap(colour_delta, subset=["Change"]),
+                    disp.style.map(colour_delta, subset=["Change"]),
                     use_container_width=True,
                     height=500,
                 )
