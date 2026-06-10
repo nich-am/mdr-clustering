@@ -63,9 +63,17 @@ def load_rop_db(fileobj, ac_type_filter: str = "") -> pd.DataFrame:
     df = pd.read_excel(fileobj)
     df.columns = df.columns.str.strip()
 
-    # Filter by AC type if specified
+    # ac_type_filter is used as a preference, not a hard filter.
+    # If a part appears under the matching AC type, that row takes priority.
+    # Parts not found under the matching type still get looked up across all types.
+    # This prevents common parts (shared across 320/737 fleets) from being missed.
     if ac_type_filter and "ObjectType" in df.columns:
-        df = df[df["ObjectType"].astype(str).str.strip() == ac_type_filter.strip()]
+        preferred = df[df["ObjectType"].astype(str).str.strip() == ac_type_filter.strip()]
+        others    = df[~df.index.isin(preferred.index)]
+        # Keep preferred rows first; for parts not in preferred, also keep "others"
+        # but deduplicate on Material so preferred takes priority
+        df = pd.concat([preferred, others], ignore_index=True)
+        df = df.drop_duplicates(subset=["Material"], keep="first")
 
     # Normalise ROP: Yes → min-maxed, No / blank → not min-maxed
     if "ROP" in df.columns:
@@ -221,14 +229,14 @@ def build_workscope_material_table(
     for col in qty_cols:
         if col not in merged.columns:
             merged[col] = 0
-    merged[qty_cols] = merged[qty_cols].fillna(0)
+    merged[qty_cols] = merged[qty_cols].fillna(0).round(2)
 
     # Derived columns
-    merged["Grand Total"]       = merged[qty_cols].sum(axis=1)
+    merged["Grand Total"]       = merged[qty_cols].sum(axis=1).round(2)
     merged["Total Occurrence"]  = (merged[qty_cols] > 0).sum(axis=1)
     merged["Weighted Score"]    = (
         merged["Grand Total"] + merged["Total Occurrence"] * 2
-    ).round(1)
+    ).round(2)
 
     # ── Join ROP database ──────────────────────────────────────────────────
     if rop_db is not None and not rop_db.empty and "Material" in rop_db.columns:
@@ -248,8 +256,8 @@ def build_workscope_material_table(
         merged["Min-Maxed?"] = merged["min_maxed"].map(
             {True: "✅ Yes", False: "❌ No"}
         ).fillna("—")
-        merged["Reorder Point"] = merged["Reorder Point"].fillna(0)
-        merged["Max. level"]    = merged["Max. level"].fillna(0)
+        merged["Reorder Point"] = merged["Reorder Point"].fillna(0).round(2)
+        merged["Max. level"]    = merged["Max. level"].fillna(0).round(2)
         merged = merged.drop(columns=["min_maxed","_key"], errors="ignore")
     else:
         merged["Min-Maxed?"]    = "—"
