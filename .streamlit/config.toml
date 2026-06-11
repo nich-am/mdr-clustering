@@ -3,4 +3,4 @@ headless = true
 port = 8501
 
 [theme]
-base = "dark"
+base = "light"
