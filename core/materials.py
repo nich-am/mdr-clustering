@@ -330,11 +330,14 @@ def workscope_table_stats(df: pd.DataFrame, n_ac: int) -> dict:
     """Summary KPIs for the workscope material table."""
     if df.empty:
         return {}
+    # Support both old ("Grand Total") and new ("Total Calls") column names
+    calls_col = "Total Calls" if "Total Calls" in df.columns else "Grand Total"
+    mm_col_ok = "Min-Maxed?" in df.columns
     return {
         "total_unique_parts":    len(df),
         "fleet_wide_parts":      int((df["Total Occurrence"] == n_ac).sum()),
-        "not_min_maxed":         int((df["Min-Maxed?"] == "❌ No").sum()),
-        "already_min_maxed":     int((df["Min-Maxed?"] == "✅ Yes").sum()),
+        "not_min_maxed":         int((df["Min-Maxed?"] == "❌ No").sum())  if mm_col_ok else 0,
+        "already_min_maxed":     int((df["Min-Maxed?"] == "✅ Yes").sum()) if mm_col_ok else 0,
         "top_score":             float(df["Weighted Score"].max()),
-        "total_qty_all":         float(df["Total Calls"].sum()),
+        "total_qty_all":         float(df[calls_col].sum()),
     }
