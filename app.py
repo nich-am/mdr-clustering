@@ -839,12 +839,16 @@ elif page == "📂 Run history":
         st.markdown(f"**{len(history)} runs saved**")
 
         # Run selector
-        run_labels = (
-            history["created_at"].apply(_to_wib) + "  ·  " +
-            history["workscope"].fillna("—") + "  ·  " +
-            history["ac_type"].fillna("—") + "  ·  " +
-            history["aircraft"].fillna("—")
-        ).tolist()
+        def _make_label(row):
+            parts = [_to_wib(str(row["created_at"]))]
+            if str(row.get("workscope", "")).strip():
+                parts.append(str(row["workscope"]).strip())
+            if str(row.get("ac_type", "")).strip():
+                parts.append(str(row["ac_type"]).strip())
+            parts.append(str(row.get("aircraft", "—")))
+            return "  ·  ".join(parts)
+
+        run_labels = history.apply(_make_label, axis=1).tolist()
         sel_label = st.selectbox("Select a run to view", run_labels, index=0)
         run_row   = history.iloc[run_labels.index(sel_label)]
         run_id    = run_row["id"]
@@ -871,51 +875,37 @@ elif page == "📂 Run history":
 
         n_projects = len(run_row.get("aircraft","").split(", ")) if run_row.get("aircraft") else 1
 
-        # ── History tabs ─────────────────────────────────────────────────────
-        hist_base = ["📊 Common Defects", "🌍 Found on Every Aircraft",
-                     "🔥 Repair Time Impact", "📈 How Scoring Works", "📋 Full Data Table"]
-        hist_ws_names  = ["📦 All Materials Used", "🎯 Min-Max Recommendation"] if not run_ws.empty else []
-        hist_tabs = st.tabs(hist_base + hist_ws_names)
+        # ── History tabs ────────────────────────────────────────────────────
+        hist_tab_names = ["📊 Ranked", "🌍 Fleet-wide", "🔥 Manhours", "📈 Score", "📋 Data"]
+        if not run_ws.empty:
+            hist_tab_names.append("📋 Workscope materials")
 
+        hist_tabs = st.tabs(hist_tab_names)
         ht_ranked, ht_fleet, ht_mhrs, ht_score, ht_data = hist_tabs[:5]
-        ht_ws     = hist_tabs[5] if len(hist_tabs) > 5 else None
-        ht_minmax = hist_tabs[6] if len(hist_tabs) > 6 else None
+        ht_ws = hist_tabs[5] if len(hist_tabs) > 5 else None
 
         if run_scores.empty:
             for t in hist_tabs[:5]:
                 with t:
                     st.info("No defect scores saved for this run.")
         else:
-            n_fleet_h   = int((run_scores["tier"] == "Fleet-wide").sum())
-            n_common_h  = int((run_scores["tier"] == "Common").sum())
-            n_isolated_h= int((run_scores["tier"] == "Isolated").sum())
-
-            # ── Common Defects ────────────────────────────────────────────
+            # ── Ranked tab ────────────────────────────────────────────────
             with ht_ranked:
-                st.markdown(
-                    f"#### {len(run_scores)} defect patterns found across {n_projects} aircraft"
-                )
-                st.markdown(
-                    f"**{n_fleet_h} fleet-wide** (every aircraft) · "
-                    f"**{n_common_h} common** (most aircraft) · "
-                    f"**{n_isolated_h} isolated** (one aircraft). "
-                    "Sorted by weighted commonality score."
-                )
-                tf = st.radio("Filter by tier", ["All","Fleet-wide","Common","Isolated"],
+                st.markdown("#### Defects by weighted commonality score")
+                tf = st.radio("Tier", ["All","Fleet-wide","Common","Isolated"],
                               horizontal=True, key="hist_tier_ranked")
                 filt = run_scores if tf == "All" else run_scores[run_scores["tier"] == tf]
                 if not filt.empty:
-                    top25 = filt.head(25).copy()
-                    top25["_label"] = top25["location"] + " — " + top25["damage_type"]
                     fig_r = px.bar(
-                        top25.sort_values("score"),
-                        x="score", y="_label",
+                        filt.head(25).sort_values("score"),
+                        x="score", y=filt.head(25).sort_values("score").apply(
+                            lambda r: f"{r['location']} — {r['damage_type']}", axis=1),
                         orientation="h", color="tier",
                         color_discrete_map={
                             "Fleet-wide":"#5DCAA5","Common":"#85B7EB","Isolated":"#FAC775"
                         },
                         title="Top 25 defects by score",
-                        labels={"score":"Score","_label":""},
+                        labels={"x":"Score","y":""},
                         height=max(380, min(len(filt),25)*28),
                     )
                     fig_r.update_layout(
@@ -925,6 +915,7 @@ elif page == "📂 Run history":
                     )
                     st.plotly_chart(fig_r, width='stretch')
 
+                    # Tier donut
                     c1, c2 = st.columns(2)
                     with c1:
                         tier_counts = run_scores["tier"].value_counts().reset_index()
@@ -940,23 +931,13 @@ elif page == "📂 Run history":
                         fig_donut.update_layout(paper_bgcolor="rgba(0,0,0,0)")
                         st.plotly_chart(fig_donut, width='stretch')
 
-            # ── Found on Every Aircraft ───────────────────────────────────
+            # ── Fleet-wide tab ────────────────────────────────────────────
             with ht_fleet:
-                fleet_h = run_scores[run_scores["tier"] == "Fleet-wide"].copy()
+                fleet_h = run_scores[run_scores["tier"] == "Fleet-wide"]
                 if fleet_h.empty:
-                    st.info(
-                        "No defects were found on every aircraft in this run. "
-                        "Check the **Common Defects** tab for issues found on most aircraft."
-                    )
+                    st.info("No fleet-wide defects in this run.")
                 else:
-                    st.markdown(
-                        f"#### {len(fleet_h)} defects found on every one of the {n_projects} aircraft"
-                    )
-                    st.markdown(
-                        "These are the most structurally significant findings — "
-                        "the same problem showed up on every aircraft in this batch, "
-                        "suggesting a fleet-wide design, process, or age-related issue."
-                    )
+                    st.markdown(f"#### {len(fleet_h)} fleet-wide defects")
                     for _, row in fleet_h.iterrows():
                         with st.expander(
                             f"**{row['location']} — {row['damage_type']}**"
@@ -970,10 +951,11 @@ elif page == "📂 Run history":
                             fc3.metric("Avg manhours",   f"{row['avg_mhrs']:.1f}h")
 
                     st.markdown("---")
-                    fleet_h["_label"] = fleet_h["location"] + " — " + fleet_h["damage_type"]
                     fig_fleet = px.bar(
                         fleet_h.sort_values("score", ascending=False).head(20),
-                        x="score", y="_label",
+                        x="score",
+                        y=fleet_h.sort_values("score", ascending=False).head(20).apply(
+                            lambda r: f"{r['location']} — {r['damage_type']}", axis=1),
                         orientation="h", color="score",
                         color_continuous_scale="Teal",
                         title="Fleet-wide defects — ranked by score",
@@ -986,29 +968,20 @@ elif page == "📂 Run history":
                     )
                     st.plotly_chart(fig_fleet, width='stretch')
 
-            # ── Repair Time Impact ────────────────────────────────────────
+            # ── Manhours tab ──────────────────────────────────────────────
             with ht_mhrs:
-                top_mh = run_scores.nlargest(25, "avg_mhrs").sort_values("avg_mhrs").copy()
+                top_mh = run_scores.nlargest(25, "avg_mhrs").sort_values("avg_mhrs")
                 if not top_mh.empty:
-                    c0 = top_mh.iloc[-1]
-                    st.markdown(
-                        f"#### Costliest defect: **{c0['location']} — {c0['damage_type']}**, "
-                        f"averaging **{c0['avg_mhrs']:.1f} hours** per repair."
-                    )
-                    st.markdown(
-                        "Use this tab to plan workforce capacity for the next event — "
-                        "the heaviest repairs dominate scheduling even when they're infrequent."
-                    )
-                    top_mh["_label"] = top_mh["location"] + " — " + top_mh["damage_type"]
                     fig_mh = px.bar(
                         top_mh,
-                        x="avg_mhrs", y="_label",
+                        x="avg_mhrs",
+                        y=top_mh.apply(lambda r: f"{r['location']} — {r['damage_type']}", axis=1),
                         orientation="h", color="tier",
                         color_discrete_map={
                             "Fleet-wide":"#5DCAA5","Common":"#85B7EB","Isolated":"#FAC775"
                         },
                         title="Top 25 defects by avg manhour cost",
-                        labels={"avg_mhrs":"Avg manhours","_label":""},
+                        labels={"x":"Avg manhours","y":""},
                         height=max(380, 25*28),
                     )
                     fig_mh.update_layout(
@@ -1018,14 +991,16 @@ elif page == "📂 Run history":
                     )
                     st.plotly_chart(fig_mh, width='stretch')
 
+                    # Bubble chart — count vs hours
                     fleet_bub = run_scores[run_scores["tier"] == "Fleet-wide"].copy()
                     if not fleet_bub.empty:
-                        fleet_bub["_label"] = fleet_bub["location"] + " — " + fleet_bub["damage_type"]
+                        fleet_bub["label"] = (fleet_bub["location"] + " — " +
+                                              fleet_bub["damage_type"])
                         fig_bub = px.scatter(
                             fleet_bub, x="total_count", y="avg_mhrs",
-                            size="score", color="score", text="_label",
+                            size="score", color="score", text="label",
                             color_continuous_scale="Teal",
-                            title="Fleet-wide defects — NRC count vs manhours",
+                            title="Fleet-wide — NRC count vs manhours",
                             labels={"total_count":"NRC count","avg_mhrs":"Avg hrs"},
                             height=420,
                         )
@@ -1035,26 +1010,22 @@ elif page == "📂 Run history":
                         )
                         st.plotly_chart(fig_bub, width='stretch')
 
-            # ── How Scoring Works ─────────────────────────────────────────
+            # ── Score breakdown tab ───────────────────────────────────────
             with ht_score:
-                st.markdown("#### How is each defect's score calculated?")
-                st.markdown(
-                    "Each defect gets a score between 0 and 1 based on three factors. "
-                    "A higher score means the defect is both common across aircraft *and* "
-                    "expensive to fix — the combination most worth preparing for."
-                )
                 top15 = run_scores.head(15).copy()
-                top15["_label"] = top15["location"] + " — " + top15["damage_type"]
+                top15["label"] = top15["location"] + " — " + top15["damage_type"]
                 if not top15.empty:
+                    # Build component stacked bar from stored score
+                    # We only have total score saved; show as single bar with tier colour
                     fig_sc = px.bar(
                         top15.sort_values("score"),
-                        x="score", y="_label",
+                        x="score", y="label",
                         orientation="h", color="tier",
                         color_discrete_map={
                             "Fleet-wide":"#5DCAA5","Common":"#85B7EB","Isolated":"#FAC775"
                         },
                         title="Top 15 defects — total score by tier",
-                        labels={"score":"Weighted score","_label":""},
+                        labels={"score":"Weighted score","label":""},
                         height=max(380, 15*32),
                     )
                     fig_sc.update_layout(
@@ -1068,77 +1039,55 @@ elif page == "📂 Run history":
                 sc2.info("**Frequency · 30%**\nAvg NRC rate per aircraft, normalised 0–1.")
                 sc3.info("**Manhour cost · 20%**\nAvg actual manhours, normalised 0–1.")
 
-            # ── Full Data Table ───────────────────────────────────────────
+            # ── Data tab ─────────────────────────────────────────────────
             with ht_data:
                 st.markdown("#### Full defect score table")
-                st.markdown(
-                    "Every defect pattern found in this run, with its score components. "
-                    "Use the filters below to narrow it down."
-                )
-                fd1, fd2 = st.columns(2)
-                tier_f_d = fd1.selectbox("Tier", ["All","Fleet-wide","Common","Isolated"],
-                                         key="hist_data_tier")
-                sort_f_d = fd2.selectbox("Sort by", ["score","avg_mhrs","total_count"],
-                                         key="hist_data_sort")
-                filt_d = run_scores.copy()
-                if tier_f_d != "All":
-                    filt_d = filt_d[filt_d["tier"] == tier_f_d]
-                filt_d = filt_d.sort_values(sort_f_d, ascending=False)
                 disp_cols = [c for c in ["location","damage_type","tier","score",
                                          "total_count","projects_count","avg_mhrs"]
-                             if c in filt_d.columns]
-                st.dataframe(filt_d[disp_cols], width='stretch', height=500)
+                             if c in run_scores.columns]
+                st.dataframe(run_scores[disp_cols], width='stretch', height=500)
 
-        # ── All Materials Used ────────────────────────────────────────────
+        # ── Workscope materials tab ────────────────────────────────────────
         if ht_ws is not None and not run_ws.empty:
             with ht_ws:
-                st.markdown("#### Every material requested across this workscope")
+                st.markdown("#### Workscope material recommendation")
                 st.markdown(
-                    f"All parts requested (toggle = Y) across all {n_projects} aircraft "
-                    "in this workscope, ranked by weighted score. "
-                    "For stocking recommendations specifically, see **Min-Max Recommendation**."
+                    "All materials called (toggle = **Y**) across the entire workscope, "
+                    "ranked by weighted score. Score = **Total Calls + (AC occurrence × 2)**. Total Qty shows actual quantities ordered."
                 )
 
                 ws_kpi1, ws_kpi2, ws_kpi3, ws_kpi4 = st.columns(4)
-                ws_kpi1.metric("Unique parts",         len(run_ws))
+                ws_kpi1.metric("Unique parts",          len(run_ws))
                 ws_kpi2.metric("Used in all aircraft",
-                               int((run_ws["Total Occurrence"] == n_projects).sum()))
+                                int((run_ws["Total Occurrence"] == n_projects).sum()))
                 ws_kpi3.metric("Not yet min-maxed ❌",
-                               int((run_ws["Min-Maxed?"] == "❌ No").sum())
-                               if "Min-Maxed?" in run_ws.columns else "—")
+                                int((run_ws["Min-Maxed?"] == "❌ No").sum()))
                 ws_kpi4.metric("Already min-maxed ✅",
-                               int((run_ws["Min-Maxed?"] == "✅ Yes").sum())
-                               if "Min-Maxed?" in run_ws.columns else "—")
+                                int((run_ws["Min-Maxed?"] == "✅ Yes").sum()))
 
-                st.markdown("---")
-
-                wf1, wf2, wf3, wf4 = st.columns(4)
-                occ_f  = wf1.selectbox("AC occurrence",
-                                       ["All", f"All {n_projects} aircraft",
-                                        f"{n_projects-1} aircraft", "1 aircraft"],
-                                       key="hist_ws_occ")
-                mm_f   = wf2.selectbox("Min-Max status",
-                                       ["All","❌ Not min-maxed","✅ Already min-maxed","— Unknown"],
-                                       key="hist_ws_mm")
-                type_opts = (["All"] + sorted(run_ws["Type"].dropna().unique().tolist())
-                             if "Type" in run_ws.columns else ["All"])
-                tp_f   = wf3.selectbox("Material type", type_opts, key="hist_ws_type")
-                sc_min = wf4.number_input("Min score", min_value=0, value=0, step=1,
-                                          key="hist_ws_score")
+                # Filters
+                wf1, wf2, wf3 = st.columns(3)
+                mm_f  = wf1.selectbox("Min-Max status",
+                                      ["All","❌ Not min-maxed","✅ Already min-maxed"],
+                                      key="hist_ws_mm")
+                occ_f = wf2.selectbox("AC occurrence",
+                                      ["All", f"All {n_projects} aircraft",
+                                       f"{n_projects-1} aircraft", "1 aircraft"],
+                                      key="hist_ws_occ")
+                type_opts = ["All"] + sorted(run_ws["Type"].dropna().unique().tolist()) if "Type" in run_ws.columns else ["All"]
+                tp_f  = wf3.selectbox("Material type", type_opts, key="hist_ws_type")
 
                 wt_h = run_ws.copy()
+                if mm_f != "All":
+                    wt_h = wt_h[wt_h["Min-Maxed?"] == mm_f]
                 if occ_f == f"All {n_projects} aircraft":
                     wt_h = wt_h[wt_h["Total Occurrence"] == n_projects]
                 elif occ_f == f"{n_projects-1} aircraft":
                     wt_h = wt_h[wt_h["Total Occurrence"] == n_projects-1]
                 elif occ_f == "1 aircraft":
                     wt_h = wt_h[wt_h["Total Occurrence"] == 1]
-                if mm_f != "All" and "Min-Maxed?" in wt_h.columns:
-                    wt_h = wt_h[wt_h["Min-Maxed?"] == mm_f]
                 if tp_f != "All" and "Type" in wt_h.columns:
                     wt_h = wt_h[wt_h["Type"] == tp_f]
-                if sc_min > 0 and "Weighted Score" in wt_h.columns:
-                    wt_h = wt_h[wt_h["Weighted Score"] >= sc_min]
 
                 st.markdown(f"Showing **{len(wt_h)}** of {len(run_ws)} materials")
 
@@ -1156,119 +1105,52 @@ elif page == "📂 Run history":
                     return ""
 
                 disp_ws_cols = [c for c in ["Part Number","Material Description","UOM","Type",
-                                             "Total Occurrence","Total Calls","Total Qty",
-                                             "Weighted Score","Min-Maxed?",
-                                             "Reorder Point","Max. level"]
+                                             "Total Occurrence","Total Calls","Total Qty","Weighted Score",
+                                             "Min-Maxed?","Reorder Point","Max Level"]
                                 if c in wt_h.columns]
                 styled_ws = wt_h[disp_ws_cols].style
                 if "Min-Maxed?" in disp_ws_cols:
                     styled_ws = styled_ws.map(_hl_mm, subset=["Min-Maxed?"])
                 if "Weighted Score" in disp_ws_cols:
                     styled_ws = styled_ws.map(_hl_score, subset=["Weighted Score"])
+                st.dataframe(styled_ws, width='stretch', height=480)
 
-                num_cols_ws = [c for c in ["Total Occurrence","Total Calls","Total Qty",
-                                            "Weighted Score","Reorder Point","Max. level"]
-                               if c in wt_h.columns]
-                col_cfg_ws = {c: st.column_config.NumberColumn(format="%g") for c in num_cols_ws}
-                st.dataframe(styled_ws, width='stretch', height=520, column_config=col_cfg_ws)
-
-        # ── Min-Max Recommendation ────────────────────────────────────────
-        if ht_minmax is not None and not run_ws.empty:
-            with ht_minmax:
-                all_ac_ws = run_ws[
-                    run_ws["Total Occurrence"] == n_projects
-                ].sort_values("Weighted Score", ascending=False)
-
-                not_mm_ws  = all_ac_ws[all_ac_ws["Min-Maxed?"] == "❌ No"] \
-                             if "Min-Maxed?" in all_ac_ws.columns else pd.DataFrame()
-                already_mm = all_ac_ws[all_ac_ws["Min-Maxed?"] == "✅ Yes"] \
-                             if "Min-Maxed?" in all_ac_ws.columns else pd.DataFrame()
-
-                st.markdown("#### Which parts should the warehouse stock ahead of time?")
-
-                if all_ac_ws.empty:
-                    st.info(
-                        f"No parts were requested on all {n_projects} aircraft in this run. "
-                        "Check the **All Materials Used** tab for the full part list."
-                    )
-                else:
+                # Pre-provision priority within history
+                all_ac_ws = run_ws[run_ws["Total Occurrence"] == n_projects].sort_values(
+                    "Weighted Score", ascending=False)
+                if not all_ac_ws.empty:
+                    st.markdown("---")
+                    not_mm_ws = all_ac_ws[all_ac_ws["Min-Maxed?"] == "❌ No"]
                     st.markdown(
-                        f"**{len(all_ac_ws)}** parts were requested on **every one of the "
-                        f"{n_projects} aircraft** in this batch — the strongest signals for "
-                        f"what to keep in stock. Of those, **{len(not_mm_ws)}** don't yet "
-                        f"have a min-max stocking plan, while **{len(already_mm)}** already do "
-                        "(worth verifying stock levels are still adequate)."
+                        f"### 📦 Pre-provision recommendation — "
+                        f"{len(all_ac_ws)} parts used in **all {n_projects} aircraft**"
                     )
-
-                    pp1, pp2, pp3 = st.columns(3)
-                    pp1.metric("Parts used on every aircraft", len(all_ac_ws))
-                    pp2.metric("🎯 Not yet min-maxed", len(not_mm_ws),
-                               help="Highest priority — needed on every aircraft, no stock plan yet")
-                    pp3.metric("✅ Already min-maxed", len(already_mm))
-
                     if not not_mm_ws.empty:
-                        st.markdown("---")
                         st.markdown(
-                            f"### 🎯 Priority list — {len(not_mm_ws)} parts to set up a min-max plan for"
+                            f"**🎯 {len(not_mm_ws)} not yet min-maxed** — "
+                            "highest priority for warehouse to action before the next event."
                         )
-                        st.markdown(
-                            "> **For the warehouse team:** the table below shows how many units "
-                            "each aircraft called for every part. Use these per-aircraft quantities "
-                            "to estimate a sensible reorder point (ROP) and max stock level."
-                        )
+                        pp_cols = [c for c in ["Part Number","Material Description","UOM",
+                                               "Total Occurrence","Total Calls","Total Qty","Weighted Score",
+                                               "Min-Maxed?"] if c in not_mm_ws.columns]
+                        st.dataframe(not_mm_ws[pp_cols], width='stretch',
+                                     height=min(400, len(not_mm_ws)*38+50))
 
-                        pp_cols = [c for c in ["Part Number","Material Description","UOM","Type",
-                                               "Total Occurrence","Total Calls","Total Qty",
-                                               "Weighted Score"]
-                                   if c in not_mm_ws.columns]
-                        num_cols_pp = [c for c in ["Total Occurrence","Total Calls","Total Qty",
-                                                   "Weighted Score"] if c in not_mm_ws.columns]
-                        col_cfg_pp = {c: st.column_config.NumberColumn(format="%g")
-                                      for c in num_cols_pp}
-                        st.dataframe(
-                            not_mm_ws[pp_cols],
-                            width='stretch',
-                            height=min(440, len(not_mm_ws)*38+50),
-                            column_config=col_cfg_pp,
-                        )
-
-                        fig_pp = px.bar(
+                        fig_ws_pp = px.bar(
                             not_mm_ws.head(20),
                             x="Weighted Score", y="Material Description",
                             orientation="h", color="Total Occurrence",
                             color_continuous_scale="Teal",
-                            title="Top 20 priority parts — ranked by weighted score",
+                            title="Pre-provision priority: fleet-wide, not min-maxed",
                             labels={"Total Occurrence":"# Aircraft"},
                             height=max(350, min(len(not_mm_ws),20)*28),
                         )
-                        fig_pp.update_layout(
+                        fig_ws_pp.update_layout(
                             yaxis=dict(autorange="reversed", tickfont_size=10),
                             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                             margin=dict(l=280, r=20, t=50, b=30),
                         )
-                        st.plotly_chart(fig_pp, width='stretch')
-                    else:
-                        st.success(
-                            "✅ All fleet-wide parts already have a min-max plan. "
-                            "Check the section below to verify stock levels are still adequate."
-                        )
-
-                    if not already_mm.empty:
-                        with st.expander(
-                            f"✅ Already min-maxed ({len(already_mm)} parts) — "
-                            "verify stock levels are still adequate before the next event"
-                        ):
-                            mm_cols = [c for c in ["Part Number","Material Description","UOM",
-                                                   "Total Calls","Total Qty","Total Occurrence",
-                                                   "Weighted Score","Reorder Point","Max. level"]
-                                       if c in already_mm.columns]
-                            num_cols_mm = [c for c in ["Total Calls","Total Qty","Total Occurrence",
-                                                       "Weighted Score","Reorder Point","Max. level"]
-                                          if c in already_mm.columns]
-                            col_cfg_mm = {c: st.column_config.NumberColumn(format="%g")
-                                         for c in num_cols_mm}
-                            st.dataframe(already_mm[mm_cols], width='stretch',
-                                         column_config=col_cfg_mm)
+                        st.plotly_chart(fig_ws_pp, width='stretch')
 
         # Download links + delete
         st.markdown("---")
@@ -1303,11 +1185,14 @@ elif page == "🔁 Compare runs":
     if len(history) < 2:
         st.info("Need at least 2 saved runs to compare.")
     else:
-        run_labels = (
-            history["created_at"].apply(_to_wib) + " · " +
-            history["workscope"].fillna("—") + " · " +
-            history["aircraft"].fillna("—")
-        ).tolist()
+        def _make_compare_label(row):
+            parts = [_to_wib(str(row["created_at"]))]
+            if str(row.get("workscope", "")).strip():
+                parts.append(str(row["workscope"]).strip())
+            parts.append(str(row.get("aircraft", "—")))
+            return " · ".join(parts)
+
+        run_labels = history.apply(_make_compare_label, axis=1).tolist()
         run_ids = history["id"].tolist()
 
         c1, c2 = st.columns(2)
