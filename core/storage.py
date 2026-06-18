@@ -126,6 +126,9 @@ def save_run(
                 "total_count":    int(row.get("total_count", 0)),
                 "projects_count": int(row.get("projects_count", 0)),
                 "avg_mhrs":       float(row.get("avg_mhrs", 0)),
+                "presence_raw":   float(row.get("presence_raw", 0)),
+                "freq_norm":      float(row.get("freq_norm", 0)),
+                "mhrs_norm":      float(row.get("mhrs_norm", 0)),
             })
         try:
             for i in range(0, len(score_rows), 100):

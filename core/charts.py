@@ -198,6 +198,20 @@ def score_components_bar(scores: pd.DataFrame, top_n: int = 15) -> go.Figure:
     top = scores.head(top_n).copy()
     top["label"] = (top["location"] + " — " + top["damage_type"]).str[:40]
 
+    # Reconstruct component columns when raw values weren't saved (e.g. loaded from Supabase)
+    has_raw = "presence_raw" in top.columns and "freq_norm" in top.columns and "mhrs_norm" in top.columns
+    if not has_raw:
+        # Back-calculate from what's available:
+        # presence_raw = projects_count / max(projects_count)  — fraction of ACs affected
+        # freq_norm    = total_count / max(total_count)         — relative NRC frequency
+        # mhrs_norm    = avg_mhrs / max(avg_mhrs)              — relative manhour cost
+        max_proj  = top["projects_count"].max() if "projects_count" in top.columns and top["projects_count"].max() > 0 else 1
+        max_count = top["total_count"].max()    if "total_count"    in top.columns and top["total_count"].max()    > 0 else 1
+        max_mhrs  = top["avg_mhrs"].max()       if "avg_mhrs"       in top.columns and top["avg_mhrs"].max()       > 0 else 1
+        top["presence_raw"] = (top["projects_count"] / max_proj)  if "projects_count" in top.columns else 0
+        top["freq_norm"]    = (top["total_count"]    / max_count)  if "total_count"    in top.columns else 0
+        top["mhrs_norm"]    = (top["avg_mhrs"]       / max_mhrs)   if "avg_mhrs"       in top.columns else 0
+
     fig = go.Figure()
     fig.add_trace(go.Bar(
         name="Presence (50%)",
