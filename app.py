@@ -585,7 +585,7 @@ if page == "🔬 New analysis":
                 renamed_num_cols = (
                     [c.replace("calls_","") + " (calls)" for c in call_ac_cols] +
                     [c.replace("qty_","")   + " (qty)"   for c in qty_ac_cols] +
-                    ["Grand Total","Weighted Score","Reorder Point","Max. level"]
+                    ["Total Calls","Total Qty","Weighted Score","Reorder Point","Max. level"]
                 )
                 col_cfg = {
                     c: st.column_config.NumberColumn(format="%g")
@@ -653,13 +653,13 @@ if page == "🔬 New analysis":
                         disp_pp_cols = (
                             ["Part Number", "Material Description", "UOM", "Type"]
                             + ac_qty_display_cols
-                            + ["Grand Total", "Total Occurrence", "Weighted Score"]
+                            + ["Total Calls", "Total Qty", "Total Occurrence", "Weighted Score"]
                         )
                         disp_pp_cols = [c for c in disp_pp_cols if c in pp_display.columns]
 
                         qty_col_cfg = {
                             c: st.column_config.NumberColumn(format="%g")
-                            for c in ac_qty_display_cols + ["Grand Total", "Weighted Score"]
+                            for c in ac_qty_display_cols + ["Total Calls", "Total Qty", "Weighted Score"]
                             if c in pp_display.columns
                         }
 
@@ -708,7 +708,7 @@ if page == "🔬 New analysis":
                             disp_mm_cols = (
                                 ["Part Number", "Material Description", "UOM"]
                                 + ac_qty_display_cols2
-                                + ["Grand Total", "Total Occurrence", "Weighted Score",
+                                + ["Total Calls", "Total Qty", "Total Occurrence", "Weighted Score",
                                    "Reorder Point", "Max. level"]
                             )
                             disp_mm_cols = [c for c in disp_mm_cols if c in mm_display.columns]
@@ -1049,7 +1049,7 @@ elif page == "📂 Run history":
                 st.markdown("#### Workscope material recommendation")
                 st.markdown(
                     "All materials called (toggle = **Y**) across the entire workscope, "
-                    "ranked by weighted score. Score = **Grand Total qty + (AC occurrence × 2)**."
+                    "ranked by weighted score. Score = **Total Calls + (AC occurrence × 2)**. Total Qty shows actual quantities ordered."
                 )
 
                 ws_kpi1, ws_kpi2, ws_kpi3, ws_kpi4 = st.columns(4)
@@ -1101,7 +1101,7 @@ elif page == "📂 Run history":
                     return ""
 
                 disp_ws_cols = [c for c in ["Part Number","Material Description","UOM","Type",
-                                             "Total Occurrence","Grand Total","Weighted Score",
+                                             "Total Occurrence","Total Calls","Total Qty","Weighted Score",
                                              "Min-Maxed?","Reorder Point","Max Level"]
                                 if c in wt_h.columns]
                 styled_ws = wt_h[disp_ws_cols].style
@@ -1127,7 +1127,7 @@ elif page == "📂 Run history":
                             "highest priority for warehouse to action before the next event."
                         )
                         pp_cols = [c for c in ["Part Number","Material Description","UOM",
-                                               "Total Occurrence","Grand Total","Weighted Score",
+                                               "Total Occurrence","Total Calls","Total Qty","Weighted Score",
                                                "Min-Maxed?"] if c in not_mm_ws.columns]
                         st.dataframe(not_mm_ws[pp_cols], width='stretch',
                                      height=min(400, len(not_mm_ws)*38+50))
