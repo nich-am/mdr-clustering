@@ -8,7 +8,7 @@ Two separate views:
   B) Workscope-level table — aggregate view across the whole event, like the
      Min-Max Recommendation table, with:
        • per-AC qty columns
-       • Grand Total qty
+       • Total Calls (order count) and Total Qty (actual quantity)
        • Total Occurrence (how many AC called this part)
        • Weighted Score  = total_qty + (ac_count × 2)
        • Min-Max status  from the Non-ROP database
@@ -192,9 +192,9 @@ def build_workscope_material_table(
     Columns produced:
       Part Number, Material Description, UOM, Type,
       qty_{ac_reg} for each AC,
-      Grand Total,
+      Total Calls, Total Qty,
       Total Occurrence   (how many AC called this part),
-      Weighted Score     = Grand Total + (Total Occurrence × 2),
+      Weighted Score     = Total Calls + (Total Occurrence × 2),
       Min-Maxed?         (Yes / No from ROP DB, or N/A if no DB uploaded),
       Reorder Point,
       Max. Level
@@ -239,14 +239,15 @@ def build_workscope_material_table(
     merged[qty_cols]  = merged[qty_cols].fillna(0).round(2)
 
     # Derived columns
-    # Grand Total Call  = total number of order-calls across all ACs (unbiased by qty)
+    # Total Calls      = number of order-calls across all ACs (used for scoring)
     # Total Occurrence  = how many ACs called this part at least once
-    # Weighted Score    = Grand Total Call + (Total Occurrence × 2)
+    # Weighted Score   = Total Calls + (Total Occurrence × 2)
     #                     heaviest weight on parts called across many ACs,
     #                     secondary weight on repeat calls within an AC
-    merged["Grand Total"]      = merged[call_cols].sum(axis=1)
+    merged["Total Calls"]      = merged[call_cols].sum(axis=1)
+    merged["Total Qty"]        = merged[qty_cols].sum(axis=1).round(2)
     merged["Total Occurrence"] = (merged[call_cols] > 0).sum(axis=1)
-    merged["Weighted Score"]   = merged["Grand Total"] + merged["Total Occurrence"] * 2
+    merged["Weighted Score"]   = merged["Total Calls"] + merged["Total Occurrence"] * 2
 
     # ── Join ROP database ──────────────────────────────────────────────────
     if rop_db is not None and not rop_db.empty and "Material" in rop_db.columns:
@@ -303,13 +304,13 @@ def build_workscope_material_table(
     front_cols = ["Part Number","Material Description","UOM","Type"]
     ac_call_cols = call_cols   # e.g. calls_PK-GLV, calls_PK-GLX, calls_PK-GLZ
     ac_qty_cols  = qty_cols    # e.g. qty_PK-GLV,   qty_PK-GLX,   qty_PK-GLZ
-    end_cols   = ["Grand Total","Total Occurrence","Weighted Score",
+    end_cols   = ["Total Calls","Total Qty","Total Occurrence","Weighted Score",
                   "Min-Maxed?","Reorder Point","Max. level"]
     all_cols   = front_cols + ac_call_cols + ac_qty_cols + end_cols
     result = merged[[c for c in all_cols if c in merged.columns]].copy()
 
     # Smart number formatting: whole numbers shown without decimals
-    numeric_display_cols = call_cols + qty_cols + ["Grand Total","Weighted Score","Reorder Point","Max. level"]
+    numeric_display_cols = call_cols + qty_cols + ["Total Calls","Total Qty","Weighted Score","Reorder Point","Max. level"]
     for col in numeric_display_cols:
         if col not in result.columns:
             continue
@@ -335,5 +336,5 @@ def workscope_table_stats(df: pd.DataFrame, n_ac: int) -> dict:
         "not_min_maxed":         int((df["Min-Maxed?"] == "❌ No").sum()),
         "already_min_maxed":     int((df["Min-Maxed?"] == "✅ Yes").sum()),
         "top_score":             float(df["Weighted Score"].max()),
-        "total_qty_all":         float(df["Grand Total"].sum()),
+        "total_qty_all":         float(df["Total Calls"].sum()),
     }
