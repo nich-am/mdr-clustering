@@ -159,6 +159,10 @@ def save_run(
     if workscope_table is not None and not workscope_table.empty:
         ws_rows = []
         for _, row in workscope_table.iterrows():
+            # Support both old (Grand Total) and new (Total Calls) column names
+            calls_val = row.get("Total Calls", row.get("Grand Total", 0))
+            qty_val   = row.get("Total Qty",   row.get("Grand Total", 0))
+            maxlv_val = row.get("Max. level",  row.get("Max Level", 0))
             ws_rows.append({
                 "run_id":               run_id,
                 "part_number":          str(row.get("Part Number", "")),
@@ -166,12 +170,12 @@ def save_run(
                 "uom":                  str(row.get("UOM", "")),
                 "material_type":        str(row.get("Type", "")),
                 "total_occurrence":     int(row.get("Total Occurrence", 0)),
-                "grand_total":          float(row.get("Total Calls", 0)),
-                "total_qty":            float(row.get("Total Qty", 0)),
+                "grand_total":          float(calls_val or 0),
+                "total_qty":            float(qty_val   or 0),
                 "weighted_score":       float(row.get("Weighted Score", 0)),
-                "min_maxed":            str(row.get("Min-Maxed?", "")),
+                "min_maxed":            str(row.get("Min-Maxed?", "—")),
                 "reorder_point":        float(row.get("Reorder Point", 0) or 0),
-                "max_level":            float(row.get("Max Level", 0) or 0),
+                "max_level":            float(maxlv_val or 0),
             })
         try:
             for i in range(0, len(ws_rows), 100):
