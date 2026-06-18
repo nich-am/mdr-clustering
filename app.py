@@ -225,6 +225,9 @@ if page == "🔬 New analysis":
         top_parts       = R["top_parts"]
         workscope_table = R.get("workscope_table", pd.DataFrame())
         rop_db          = R.get("rop_db", pd.DataFrame())
+        workscope       = R.get("workscope", workscope or "")
+        ac_type         = R.get("ac_type",   ac_type   or "")
+        notes           = R.get("notes",     notes     or "")
         has_mrm         = not mat_detail.empty
         has_workscope   = not workscope_table.empty
 
