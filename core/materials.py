@@ -54,25 +54,18 @@ def load_mrm(fileobj) -> pd.DataFrame:
 
 
 # ── Load Non-ROP / Min-Max database ───────────────────────────────────────
-def load_rop_db(fileobj, ac_type_filter: str = "") -> pd.DataFrame:
+def load_rop_db(fileobj) -> pd.DataFrame:
     """
     Read the Non-ROP database Excel.
-    Optionally filter by ObjectType (e.g. '320-200').
+    No AC type filtering — the database covers all aircraft types.
+    Deduplicates on Material so each part number appears only once.
     Returns a DataFrame with columns: Material, MPN, ROP, Reorder Point, Max. level
     """
     df = pd.read_excel(fileobj)
     df.columns = df.columns.str.strip()
 
-    # ac_type_filter is used as a preference, not a hard filter.
-    # If a part appears under the matching AC type, that row takes priority.
-    # Parts not found under the matching type still get looked up across all types.
-    # This prevents common parts (shared across 320/737 fleets) from being missed.
-    if ac_type_filter and "ObjectType" in df.columns:
-        preferred = df[df["ObjectType"].astype(str).str.strip() == ac_type_filter.strip()]
-        others    = df[~df.index.isin(preferred.index)]
-        # Keep preferred rows first; for parts not in preferred, also keep "others"
-        # but deduplicate on Material so preferred takes priority
-        df = pd.concat([preferred, others], ignore_index=True)
+    # Deduplicate on Material (part + vendor code) — keep first occurrence
+    if "Material" in df.columns:
         df = df.drop_duplicates(subset=["Material"], keep="first")
 
     # Normalise ROP: Yes → min-maxed, No / blank → not min-maxed
