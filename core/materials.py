@@ -334,3 +334,131 @@ def workscope_table_stats(df: pd.DataFrame, n_ac: int) -> dict:
         "top_score":             float(df["Weighted Score"].max()),
         "total_qty_all":         float(df[calls_col].sum()),
     }
+
+
+# ── C) Alternate material recommendation ───────────────────────────────────
+# The bundled data/alt_material_database.xlsx is a pre-processed long-format
+# lookup built from GMF's Alternate Material master (Material, Leading Part,
+# Alternate 1-6, One Way Alternate 1-5). It only keeps rows where an alternate
+# actually exists, in the form:
+#   base_part | base_description | alt_part | alt_kind
+# alt_kind is one of: "Leading Part", "Alternate", "One-Way Alternate"
+
+def load_alt_mat_db(fileobj) -> pd.DataFrame:
+    """
+    Load the bundled Alternate Material lookup table.
+    Returns columns: base_part, base_description, alt_part, alt_kind
+    """
+    df = pd.read_excel(fileobj, dtype=str)
+    df.columns = df.columns.str.strip()
+    for c in ["base_part", "base_description", "alt_part", "alt_kind"]:
+        if c in df.columns:
+            df[c] = df[c].astype(str).str.strip()
+    return df.reset_index(drop=True)
+
+
+def build_alternate_material_recommendations(
+    workscope_table: pd.DataFrame,
+    alt_lookup: pd.DataFrame,
+    rop_db: pd.DataFrame = None,
+) -> pd.DataFrame:
+    """
+    For every part in the workscope material table, find any known
+    alternates (in either direction) and check whether each alternate
+    is already min-maxed in the Non-ROP database.
+
+    A "swap opportunity" is a row where the requested part is NOT
+    min-maxed but a known alternate already IS — meaning the warehouse
+    could use the existing min-max plan instead of creating a new one.
+    """
+    if workscope_table is None or workscope_table.empty:
+        return pd.DataFrame()
+    if alt_lookup is None or alt_lookup.empty:
+        return pd.DataFrame()
+
+    wt = workscope_table.copy()
+    wt["_key"] = wt["Part Number"].astype(str).str.strip().str.upper()
+
+    alt = alt_lookup.copy()
+    alt["_base_key"] = alt["base_part"].astype(str).str.strip().str.upper()
+    alt["_alt_key"]  = alt["alt_part"].astype(str).str.strip().str.upper()
+
+    ws_cols = [c for c in ["Part Number","Material Description","Min-Maxed?",
+                            "Weighted Score","Total Occurrence"] if c in wt.columns]
+
+    # Forward: workscope part is the base part → alternate is alt_part
+    fwd = wt.merge(alt, left_on="_key", right_on="_base_key", how="inner")
+    if not fwd.empty:
+        fwd["Alternate Part Number"] = fwd["alt_part"]
+        fwd["Alternate Kind"]        = fwd["alt_kind"]
+
+    # Reverse: workscope part appears as someone else's alternate →
+    # that someone else's part number is also an interchangeable option
+    rev = wt.merge(alt, left_on="_key", right_on="_alt_key", how="inner")
+    if not rev.empty:
+        rev["Alternate Part Number"] = rev["base_part"]
+        rev["Alternate Kind"]        = rev["alt_kind"] + " (reverse)"
+
+    combined = pd.concat([fwd, rev], ignore_index=True, sort=False)
+    if combined.empty:
+        return pd.DataFrame()
+
+    combined["_alt_norm"] = combined["Alternate Part Number"].astype(str).str.strip().str.upper()
+    # Drop cases where the "alternate" is just the same part as requested
+    combined = combined[combined["_alt_norm"] != combined["_key"]]
+    if combined.empty:
+        return pd.DataFrame()
+
+    # ROP lookup for the alternate part
+    rop_map = {}
+    if rop_db is not None and not rop_db.empty and "Material" in rop_db.columns:
+        rop_norm = rop_db.copy()
+        rop_norm["_key"] = rop_norm["Material"].astype(str).str.strip().str.upper()
+        rop_map = dict(zip(rop_norm["_key"], rop_norm["min_maxed"]))
+
+    def _mm_label(key):
+        val = rop_map.get(key)
+        if val is True:  return "✅ Yes"
+        if val is False: return "❌ No"
+        return "— Unknown"
+
+    combined["Alternate Min-Maxed?"] = combined["_alt_norm"].map(_mm_label)
+    combined = combined.rename(columns={"Min-Maxed?": "Requested Min-Maxed?"})
+
+    out_cols = [c.replace("Min-Maxed?", "Requested Min-Maxed?") if c == "Min-Maxed?" else c
+                for c in ws_cols] + ["Alternate Part Number", "Alternate Kind", "Alternate Min-Maxed?"]
+    out_cols = [c for c in out_cols if c in combined.columns]
+
+    result = combined[out_cols].drop_duplicates(
+        subset=["Part Number", "Alternate Part Number"]
+    ).reset_index(drop=True)
+
+    # Sort: swap opportunities first (requested=No, alternate=Yes), then by score
+    result["_is_swap"] = (
+        (result.get("Requested Min-Maxed?", "") == "❌ No") &
+        (result["Alternate Min-Maxed?"] == "✅ Yes")
+    )
+    sort_cols = ["_is_swap"]
+    sort_asc  = [False]
+    if "Weighted Score" in result.columns:
+        sort_cols.append("Weighted Score")
+        sort_asc.append(False)
+    result = result.sort_values(sort_cols, ascending=sort_asc).drop(columns=["_is_swap"])
+
+    return result.reset_index(drop=True)
+
+
+def alt_mat_stats(df: pd.DataFrame) -> dict:
+    """Summary KPIs for the alternate material recommendation table."""
+    if df.empty:
+        return {}
+    is_swap = (
+        (df.get("Requested Min-Maxed?", "") == "❌ No") &
+        (df["Alternate Min-Maxed?"] == "✅ Yes")
+    )
+    return {
+        "total_relationships": len(df),
+        "parts_with_alternates": df["Part Number"].nunique(),
+        "swap_opportunities":  int(is_swap.sum()),
+        "swap_parts":          int(df.loc[is_swap, "Part Number"].nunique()),
+    }
