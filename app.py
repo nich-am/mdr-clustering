@@ -184,7 +184,7 @@ if page == "🔬 New analysis":
                         rop_path = os.path.join(
                             os.path.dirname(__file__), "data", "rop_database.xlsx"
                         )
-                        rop_db = load_rop_db(open(rop_path, "rb"), ac_type_filter=ac_type)
+                        rop_db = load_rop_db(open(rop_path, "rb"))
                     except Exception as ex:
                         st.warning(f"Could not load Non-ROP DB: {ex}")
                         rop_db = pd.DataFrame()
