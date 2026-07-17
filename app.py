@@ -21,7 +21,9 @@ import plotly.express as px
 from core.pipeline   import run_pipeline, build_excel
 from core.materials  import (load_mrm, build_material_summary, summarise_by_defect,
                              top_parts_across_fleet, load_rop_db,
-                             build_workscope_material_table, workscope_table_stats)
+                             build_workscope_material_table, workscope_table_stats,
+                             load_alt_mat_db, build_alternate_material_recommendations,
+                             alt_mat_stats)
 from core.pdf_export import generate_pdf
 from core.storage    import (
     save_run, load_run_history, load_run_scores,
@@ -177,6 +179,7 @@ if page == "🔬 New analysis":
                     mat_detail = mat_summary = top_parts = pd.DataFrame()
                     workscope_table = pd.DataFrame()
                     rop_db = pd.DataFrame()
+                    alt_mat_recs = pd.DataFrame()
 
                     # Load Non-ROP database from bundled file
                     try:
@@ -198,10 +201,26 @@ if page == "🔬 New analysis":
                             rop_db=rop_db if not rop_db.empty else None,
                         )
 
+                        # Load bundled Alternate Material database and build recommendations
+                        try:
+                            alt_mat_path = os.path.join(
+                                os.path.dirname(__file__), "data", "alt_material_database.xlsx"
+                            )
+                            alt_mat_db = load_alt_mat_db(open(alt_mat_path, "rb"))
+                            if not workscope_table.empty:
+                                alt_mat_recs = build_alternate_material_recommendations(
+                                    workscope_table, alt_mat_db,
+                                    rop_db=rop_db if not rop_db.empty else None,
+                                )
+                        except Exception as ex:
+                            st.warning(f"Could not load Alternate Material DB: {ex}")
+                            alt_mat_recs = pd.DataFrame()
+
                     results.update({
                         "mrm_dict": mrm_dict, "mat_detail": mat_detail,
                         "mat_summary": mat_summary, "top_parts": top_parts,
                         "workscope_table": workscope_table, "rop_db": rop_db,
+                        "alt_mat_recs": alt_mat_recs,
                         "workscope": workscope, "ac_type": ac_type, "notes": notes,
                     })
                     st.session_state.results = results
@@ -225,11 +244,13 @@ if page == "🔬 New analysis":
         top_parts       = R["top_parts"]
         workscope_table = R.get("workscope_table", pd.DataFrame())
         rop_db          = R.get("rop_db", pd.DataFrame())
+        alt_mat_recs    = R.get("alt_mat_recs", pd.DataFrame())
         workscope       = R.get("workscope", workscope or "")
         ac_type         = R.get("ac_type",   ac_type   or "")
         notes           = R.get("notes",     notes     or "")
         has_mrm         = not mat_detail.empty
         has_workscope   = not workscope_table.empty
+        has_alt_mat     = not alt_mat_recs.empty
 
         n_clustered = (df["cluster_id"] != -1).sum()
         n_clusters  = df[df["cluster_id"] != -1]["cluster_id"].nunique()
@@ -277,7 +298,8 @@ if page == "🔬 New analysis":
         mrm_names   = ["🔩 Parts Needed per Defect"] if has_mrm else []
         ws_names    = ["📦 All Materials Used"] if has_workscope else []
         mm_names    = ["🎯 Min-Max Recommendation"] if has_workscope else []
-        tabs = st.tabs(base_names + mrm_names + ws_names + mm_names)
+        alt_names   = ["🔁 Alternate Materials"] if has_workscope else []
+        tabs = st.tabs(base_names + mrm_names + ws_names + mm_names + alt_names)
 
         tab_ranked, tab_fleet, tab_map, tab_mhrs, tab_score, tab_data = tabs[:6]
         idx = 6
@@ -290,6 +312,9 @@ if page == "🔬 New analysis":
         tab_minmax = None
         if has_workscope:
             tab_minmax = tabs[idx]; idx += 1
+        tab_altmat = None
+        if has_workscope:
+            tab_altmat = tabs[idx]; idx += 1
 
         n_ac = len(projects)
         n_fleet_wide   = int((scores["tier"] == "Fleet-wide").sum())
@@ -717,6 +742,93 @@ if page == "🔬 New analysis":
                             disp_mm_cols = [c for c in disp_mm_cols if c in mm_display.columns]
                             st.dataframe(mm_display[disp_mm_cols], width='stretch')
 
+        # ── Alternate Materials ─────────────────────────────────────────────
+        if has_workscope and tab_altmat is not None:
+            with tab_altmat:
+                st.markdown("#### Is there already-stocked alternate for a part that isn't min-maxed?")
+
+                if not has_alt_mat:
+                    st.info(
+                        "None of the parts in this workscope have a known alternate "
+                        "listed in GMF's Alternate Material database — nothing to show here."
+                    )
+                else:
+                    astats = alt_mat_stats(alt_mat_recs)
+                    st.markdown(
+                        f"**{astats.get('parts_with_alternates', 0)}** parts requested in this "
+                        f"workscope have at least one known alternate — **"
+                        f"{astats.get('total_relationships', 0)}** part-to-alternate relationships "
+                        f"in total. Of those, **{astats.get('swap_opportunities', 0)}** are "
+                        f"**swap opportunities**: the requested part has no min-max plan, but an "
+                        f"interchangeable alternate is *already* min-maxed — meaning the warehouse "
+                        f"may not need to set up anything new at all."
+                    )
+
+                    a1, a2, a3 = st.columns(3)
+                    a1.metric("Parts with known alternates", astats.get("parts_with_alternates", 0))
+                    a2.metric("🔁 Swap opportunities", astats.get("swap_opportunities", 0),
+                              help="Requested part not min-maxed, but its alternate already is")
+                    a3.metric("Total alternate relationships", astats.get("total_relationships", 0))
+
+                    is_swap = (
+                        (alt_mat_recs.get("Requested Min-Maxed?", "") == "❌ No") &
+                        (alt_mat_recs["Alternate Min-Maxed?"] == "✅ Yes")
+                    )
+                    swap_df   = alt_mat_recs[is_swap]
+                    other_df  = alt_mat_recs[~is_swap]
+
+                    if not swap_df.empty:
+                        st.markdown("---")
+                        st.markdown(f"### 🔁 {len(swap_df)} swap opportunities")
+                        st.markdown(
+                            "> **For the warehouse team:** instead of setting up a brand-new "
+                            "min-max plan for the part on the left, consider designating the "
+                            "already-min-maxed alternate on the right for this purpose — "
+                            "confirm interchangeability with engineering first."
+                        )
+                        swap_disp_cols = [c for c in [
+                            "Part Number", "Material Description", "Requested Min-Maxed?",
+                            "Alternate Part Number", "Alternate Kind", "Alternate Min-Maxed?",
+                            "Weighted Score", "Total Occurrence",
+                        ] if c in swap_df.columns]
+                        st.dataframe(
+                            swap_df[swap_disp_cols],
+                            width='stretch',
+                            height=min(500, len(swap_df) * 38 + 50),
+                        )
+
+                    st.markdown("---")
+                    st.markdown(f"### All alternate relationships ({len(alt_mat_recs)})")
+                    st.markdown(
+                        "Every known alternate for every part in this workscope — "
+                        "including cases where neither the requested part nor its "
+                        "alternate is min-maxed yet, shown here for full traceability."
+                    )
+
+                    fk1, fk2 = st.columns(2)
+                    req_mm_opts = ["All"] + sorted(alt_mat_recs["Requested Min-Maxed?"].dropna().unique().tolist()) \
+                                  if "Requested Min-Maxed?" in alt_mat_recs.columns else ["All"]
+                    alt_mm_opts = ["All"] + sorted(alt_mat_recs["Alternate Min-Maxed?"].dropna().unique().tolist())
+                    sel_req_mm = fk1.selectbox("Requested part status", req_mm_opts)
+                    sel_alt_mm = fk2.selectbox("Alternate part status", alt_mm_opts)
+
+                    filtered_alt = alt_mat_recs.copy()
+                    if sel_req_mm != "All" and "Requested Min-Maxed?" in filtered_alt.columns:
+                        filtered_alt = filtered_alt[filtered_alt["Requested Min-Maxed?"] == sel_req_mm]
+                    if sel_alt_mm != "All":
+                        filtered_alt = filtered_alt[filtered_alt["Alternate Min-Maxed?"] == sel_alt_mm]
+
+                    st.markdown(f"Showing **all {len(filtered_alt)}** matching relationships")
+                    all_disp_cols = [c for c in [
+                        "Part Number", "Material Description", "Requested Min-Maxed?",
+                        "Alternate Part Number", "Alternate Kind", "Alternate Min-Maxed?",
+                        "Weighted Score", "Total Occurrence",
+                    ] if c in filtered_alt.columns]
+                    st.dataframe(
+                        filtered_alt[all_disp_cols],
+                        width='stretch',
+                        height=600,
+                    )
 
         # ── Downloads + Save ──────────────────────────────────────────────
         st.markdown("---")
@@ -769,6 +881,8 @@ if page == "🔬 New analysis":
                         c.replace("qty_","") for c in ws_export.columns
                     ]
                     ws_export.to_excel(writer, sheet_name="Workscope_Materials",   index=False)
+                if has_alt_mat:
+                    alt_mat_recs.to_excel(writer, sheet_name="Alternate_Materials", index=False)
             mat_buf.seek(0)
             with col3:
                 st.download_button(
