@@ -124,11 +124,7 @@ with st.sidebar:
 
         st.markdown("### 3 · Run metadata")
         workscope = st.text_input("Workscope", placeholder="e.g. 6Y+12Y C-Check")
-        ac_type   = st.text_input(
-            "Aircraft type",
-            placeholder="e.g. 320-200",
-            help="Must match ObjectType in Non-ROP DB e.g. 320-200, 737-800",
-        )
+        ac_type   = ""
         notes     = st.text_area("Notes (optional)", height=80)
 
         st.markdown("---")
@@ -931,7 +927,6 @@ if page == "🔬 New analysis":
             with save_col1:
                 st.markdown(
                     f"Workscope: **{workscope or '—'}** · "
-                    f"AC type: **{ac_type or '—'}** · "
                     f"Aircraft: **{', '.join(projects)}**"
                 )
             with save_col2:
@@ -1032,15 +1027,36 @@ elif page == "📂 Run history":
         hist_base = ["📊 Common Defects", "🌍 Found on Every Aircraft",
                      "🔥 Repair Time Impact", "📈 How Scoring Works", "📋 Full Data Table"]
         hist_ws   = ["📦 All Materials Used", "🎯 Min-Max Recommendation"] if not run_ws.empty else []
-        hist_tabs = st.tabs(hist_base + hist_ws)
 
-        ht_ranked = hist_tabs[0]
-        ht_fleet  = hist_tabs[1]
-        ht_mhrs   = hist_tabs[2]
-        ht_score  = hist_tabs[3]
-        ht_data   = hist_tabs[4]
-        ht_ws     = hist_tabs[5] if len(hist_tabs) > 5 else None
-        ht_minmax = hist_tabs[6] if len(hist_tabs) > 6 else None
+        # Alternate Materials can be recomputed live from the saved workscope table
+        # (it only needs the workscope table + bundled reference DBs, neither of
+        # which requires per-run storage)
+        hist_alt_recs = pd.DataFrame()
+        if not run_ws.empty:
+            try:
+                hist_rop_path = os.path.join(os.path.dirname(__file__), "data", "rop_database.xlsx")
+                hist_rop_db   = load_rop_db(open(hist_rop_path, "rb"))
+                hist_alt_path = os.path.join(os.path.dirname(__file__), "data", "alt_material_database.xlsx")
+                hist_alt_db   = load_alt_mat_db(open(hist_alt_path, "rb"))
+                hist_alt_recs = build_alternate_material_recommendations(
+                    run_ws, hist_alt_db,
+                    rop_db=hist_rop_db if not hist_rop_db.empty else None,
+                )
+            except Exception:
+                hist_alt_recs = pd.DataFrame()
+        hist_has_alt = not hist_alt_recs.empty
+        hist_altmat  = ["🔁 Alternate Materials"] if not run_ws.empty else []
+
+        hist_tabs = st.tabs(hist_base + hist_ws + hist_altmat)
+
+        ht_ranked  = hist_tabs[0]
+        ht_fleet   = hist_tabs[1]
+        ht_mhrs    = hist_tabs[2]
+        ht_score   = hist_tabs[3]
+        ht_data    = hist_tabs[4]
+        ht_ws      = hist_tabs[5] if len(hist_ws) > 0 else None
+        ht_minmax  = hist_tabs[6] if len(hist_ws) > 0 else None
+        ht_altmat  = hist_tabs[5 + len(hist_ws)] if hist_altmat else None
 
         n_fleet_h    = int((run_scores["tier"] == "Fleet-wide").sum()) if not run_scores.empty else 0
         n_common_h   = int((run_scores["tier"] == "Common").sum())     if not run_scores.empty else 0
@@ -1345,6 +1361,93 @@ elif page == "📂 Run history":
                             )
                             disp_mm_h = [c for c in disp_mm_h if c in mm_h_disp.columns]
                             st.dataframe(mm_h_disp[disp_mm_h], width='stretch')
+
+        # ── Alternate Materials ──────────────────────────────────────────────
+        if ht_altmat is not None:
+            with ht_altmat:
+                st.markdown("#### Is there already-stocked alternate for a part that isn't min-maxed?")
+
+                if not hist_has_alt:
+                    st.info(
+                        "None of the parts in this saved workscope have a known alternate "
+                        "listed in GMF's Alternate Material database — nothing to show here."
+                    )
+                else:
+                    h_astats = alt_mat_stats(hist_alt_recs)
+                    st.markdown(
+                        f"**{h_astats.get('parts_with_alternates', 0)}** parts requested in this "
+                        f"workscope have at least one known alternate — **"
+                        f"{h_astats.get('total_relationships', 0)}** part-to-alternate relationships "
+                        f"in total. Of those, **{h_astats.get('swap_opportunities', 0)}** are "
+                        f"**swap opportunities**: the requested part has no min-max plan, but an "
+                        f"interchangeable alternate is *already* min-maxed — meaning the warehouse "
+                        f"may not need to set up anything new at all."
+                    )
+
+                    ha1, ha2, ha3 = st.columns(3)
+                    ha1.metric("Parts with known alternates", h_astats.get("parts_with_alternates", 0))
+                    ha2.metric("🔁 Swap opportunities", h_astats.get("swap_opportunities", 0),
+                               help="Requested part not min-maxed, but its alternate already is")
+                    ha3.metric("Total alternate relationships", h_astats.get("total_relationships", 0))
+
+                    h_is_swap = (
+                        (hist_alt_recs.get("Requested Min-Maxed?", "") == "❌ No") &
+                        (hist_alt_recs["Alternate Min-Maxed?"] == "✅ Yes")
+                    )
+                    h_swap_df  = hist_alt_recs[h_is_swap]
+
+                    if not h_swap_df.empty:
+                        st.markdown("---")
+                        st.markdown(f"### 🔁 {len(h_swap_df)} swap opportunities")
+                        st.markdown(
+                            "> **For the warehouse team:** instead of setting up a brand-new "
+                            "min-max plan for the part on the left, consider designating the "
+                            "already-min-maxed alternate on the right for this purpose — "
+                            "confirm interchangeability with engineering first."
+                        )
+                        h_swap_cols = [c for c in [
+                            "Part Number", "Material Description", "Requested Min-Maxed?",
+                            "Alternate Part Number", "Alternate Kind", "Alternate Min-Maxed?",
+                            "Weighted Score", "Total Occurrence",
+                        ] if c in h_swap_df.columns]
+                        st.dataframe(
+                            h_swap_df[h_swap_cols],
+                            width='stretch',
+                            height=min(500, len(h_swap_df) * 38 + 50),
+                        )
+
+                    st.markdown("---")
+                    st.markdown(f"### All alternate relationships ({len(hist_alt_recs)})")
+                    st.markdown(
+                        "Every known alternate for every part in this workscope — "
+                        "including cases where neither the requested part nor its "
+                        "alternate is min-maxed yet, shown here for full traceability."
+                    )
+
+                    h_fk1, h_fk2 = st.columns(2)
+                    h_req_opts = ["All"] + sorted(hist_alt_recs["Requested Min-Maxed?"].dropna().unique().tolist()) \
+                                 if "Requested Min-Maxed?" in hist_alt_recs.columns else ["All"]
+                    h_alt_opts = ["All"] + sorted(hist_alt_recs["Alternate Min-Maxed?"].dropna().unique().tolist())
+                    h_sel_req = h_fk1.selectbox("Requested part status", h_req_opts, key="hist_alt_req")
+                    h_sel_alt = h_fk2.selectbox("Alternate part status", h_alt_opts, key="hist_alt_alt")
+
+                    h_filtered = hist_alt_recs.copy()
+                    if h_sel_req != "All" and "Requested Min-Maxed?" in h_filtered.columns:
+                        h_filtered = h_filtered[h_filtered["Requested Min-Maxed?"] == h_sel_req]
+                    if h_sel_alt != "All":
+                        h_filtered = h_filtered[h_filtered["Alternate Min-Maxed?"] == h_sel_alt]
+
+                    st.markdown(f"Showing **all {len(h_filtered)}** matching relationships")
+                    h_all_cols = [c for c in [
+                        "Part Number", "Material Description", "Requested Min-Maxed?",
+                        "Alternate Part Number", "Alternate Kind", "Alternate Min-Maxed?",
+                        "Weighted Score", "Total Occurrence",
+                    ] if c in h_filtered.columns]
+                    st.dataframe(
+                        h_filtered[h_all_cols],
+                        width='stretch',
+                        height=600,
+                    )
 
         # ── Downloads ─────────────────────────────────────────────────────
         st.markdown("---")
