@@ -187,6 +187,7 @@ def build_workscope_material_table(
       qty_{ac_reg} for each AC,
       Total Calls, Total Qty,
       Total Occurrence   (how many AC called this part),
+      Occurrence %       = Total Occurrence / total AC count × 100,
       Weighted Score     = Total Calls + (Total Occurrence × 2),
       Min-Maxed?         (Yes / No from ROP DB, or N/A if no DB uploaded),
       Reorder Point,
@@ -240,6 +241,7 @@ def build_workscope_material_table(
     merged["Total Calls"]      = merged[call_cols].sum(axis=1)
     merged["Total Qty"]        = merged[qty_cols].sum(axis=1).round(2)
     merged["Total Occurrence"] = (merged[call_cols] > 0).sum(axis=1)
+    merged["Occurrence %"]     = (merged["Total Occurrence"] / len(ac_regs) * 100).round(1)
     merged["Weighted Score"]   = merged["Total Calls"] + merged["Total Occurrence"] * 2
 
     # ── Join ROP database ──────────────────────────────────────────────────
@@ -297,13 +299,13 @@ def build_workscope_material_table(
     front_cols = ["Part Number","Material Description","UOM","Type"]
     ac_call_cols = call_cols   # e.g. calls_PK-GLV, calls_PK-GLX, calls_PK-GLZ
     ac_qty_cols  = qty_cols    # e.g. qty_PK-GLV,   qty_PK-GLX,   qty_PK-GLZ
-    end_cols   = ["Total Calls","Total Qty","Total Occurrence","Weighted Score",
+    end_cols   = ["Total Calls","Total Qty","Total Occurrence","Occurrence %","Weighted Score",
                   "Min-Maxed?","Reorder Point","Max. level"]
     all_cols   = front_cols + ac_call_cols + ac_qty_cols + end_cols
     result = merged[[c for c in all_cols if c in merged.columns]].copy()
 
     # Smart number formatting: whole numbers shown without decimals
-    numeric_display_cols = call_cols + qty_cols + ["Total Calls","Total Qty","Weighted Score","Reorder Point","Max. level"]
+    numeric_display_cols = call_cols + qty_cols + ["Total Calls","Total Qty","Occurrence %","Weighted Score","Reorder Point","Max. level"]
     for col in numeric_display_cols:
         if col not in result.columns:
             continue
