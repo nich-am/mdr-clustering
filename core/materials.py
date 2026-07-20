@@ -333,6 +333,7 @@ def workscope_table_stats(df: pd.DataFrame, n_ac: int) -> dict:
         "fleet_wide_parts":      int((df["Total Occurrence"] == n_ac).sum()),
         "not_min_maxed":         int((df["Min-Maxed?"] == "❌ No").sum())  if mm_col_ok else 0,
         "already_min_maxed":     int((df["Min-Maxed?"] == "✅ Yes").sum()) if mm_col_ok else 0,
+        "not_found_in_db":       int((df["Min-Maxed?"] == "—").sum())     if mm_col_ok else 0,
         "top_score":             float(df["Weighted Score"].max()),
         "total_qty_all":         float(df[calls_col].sum()),
     }
