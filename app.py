@@ -294,8 +294,9 @@ if page == "🔬 New analysis":
         mrm_names   = ["🔩 Parts Needed per Defect"] if has_mrm else []
         ws_names    = ["📦 All Materials Used"] if has_workscope else []
         mm_names    = ["🎯 Min-Max Recommendation"] if has_workscope else []
+        nf_names    = ["❓ Not Found in DB"] if has_workscope else []
         alt_names   = ["🔁 Alternate Materials"] if has_workscope else []
-        tabs = st.tabs(base_names + mrm_names + ws_names + mm_names + alt_names)
+        tabs = st.tabs(base_names + mrm_names + ws_names + mm_names + nf_names + alt_names)
 
         tab_ranked, tab_fleet, tab_map, tab_mhrs, tab_score, tab_data = tabs[:6]
         idx = 6
@@ -308,6 +309,9 @@ if page == "🔬 New analysis":
         tab_minmax = None
         if has_workscope:
             tab_minmax = tabs[idx]; idx += 1
+        tab_notfound = None
+        if has_workscope:
+            tab_notfound = tabs[idx]; idx += 1
         tab_altmat = None
         if has_workscope:
             tab_altmat = tabs[idx]; idx += 1
@@ -558,10 +562,12 @@ if page == "🔬 New analysis":
                     "specifically, see the **Min-Max Recommendation** tab."
                 )
 
-                wk1, wk2, wk3 = st.columns(3)
+                wk1, wk2, wk3, wk4 = st.columns(4)
                 wk1.metric("Unique parts",          stats.get("total_unique_parts",0))
                 wk2.metric("Used on all aircraft",  stats.get("fleet_wide_parts",0))
-                wk3.metric("Highest score",         f"{stats.get('top_score',0):.0f}")
+                wk3.metric("❓ Not found in DB",     stats.get("not_found_in_db",0),
+                           help="See the Not Found in DB tab for details")
+                wk4.metric("Highest score",         f"{stats.get('top_score',0):.0f}")
 
                 with st.expander("ℹ️ What do Calls and Occurrence mean?"):
                     st.markdown(
@@ -769,7 +775,72 @@ if page == "🔬 New analysis":
                             disp_mm_cols = [c for c in disp_mm_cols if c in mm_display.columns]
                             st.dataframe(mm_display[disp_mm_cols], width='stretch')
 
-        # ── Alternate Materials ─────────────────────────────────────────────
+        # ── Not Found in DB ────────────────────────────────────────────────
+        if has_workscope and tab_notfound is not None:
+            with tab_notfound:
+                not_found = workscope_table[workscope_table["Min-Maxed?"] == "—"] \
+                            if "Min-Maxed?" in workscope_table.columns else pd.DataFrame()
+
+                st.markdown("#### Parts that couldn't be checked against the Non-ROP database")
+                st.markdown(
+                    "These parts' status is genuinely **unknown**, not confirmed \"No\" — "
+                    "their Part Number wasn't found anywhere in the Non-ROP database, so "
+                    "there's no record to say whether they're min-maxed or not. This is "
+                    "different from the ❌ **Not yet min-maxed** parts in the Min-Max "
+                    "Recommendation tab, which *were* found in the database with an empty ROP."
+                )
+
+                if not_found.empty:
+                    st.success(
+                        "✅ Every part in this workscope was successfully matched against "
+                        "the Non-ROP database — nothing to show here."
+                    )
+                else:
+                    nf1, nf2, nf3 = st.columns(3)
+                    nf1.metric("Parts not found in DB", len(not_found))
+                    nf2.metric("Of total unique parts",
+                               f"{len(not_found) / len(workscope_table) * 100:.0f}%"
+                               if len(workscope_table) else "0%")
+                    nf_fleet = not_found[not_found["Total Occurrence"] == n_ac]
+                    nf3.metric("Used on all aircraft", len(nf_fleet),
+                               help="Highest priority to investigate — these are common parts "
+                                    "with completely unknown stocking status")
+
+                    st.markdown(
+                        "> **For the warehouse/database team:** these Part Numbers likely need "
+                        "to be **added to the Non-ROP database** (or their Part Number format "
+                        "reconciled) before a min-max decision can even be made. Until then, "
+                        "their stocking status is a blind spot."
+                    )
+
+                    st.markdown("---")
+                    if not nf_fleet.empty:
+                        st.markdown(f"### 🔎 {len(nf_fleet)} parts used on all {n_ac} aircraft — highest priority to look into")
+                        nf_fleet_sorted = nf_fleet.sort_values("Weighted Score", ascending=False)
+                        nf_disp_cols = [c for c in ["Part Number","Material Description","UOM","Type",
+                                                     "Total Calls","Total Qty","Total Occurrence",
+                                                     "Occurrence %","Weighted Score"]
+                                        if c in nf_fleet_sorted.columns]
+                        st.dataframe(nf_fleet_sorted[nf_disp_cols], width='stretch',
+                                     height=min(440, len(nf_fleet_sorted) * 38 + 50))
+
+                    st.markdown("---")
+                    st.markdown(f"### All {len(not_found)} unmatched parts")
+                    nf_type_opts = ["All"] + sorted(not_found["Type"].dropna().unique().tolist()) \
+                                   if "Type" in not_found.columns else ["All"]
+                    nf_type_sel = st.selectbox("Material type", nf_type_opts, key="nf_type_filter")
+                    nf_filtered = not_found if nf_type_sel == "All" else not_found[not_found["Type"] == nf_type_sel]
+
+                    nf_all_cols = [c for c in ["Part Number","Material Description","UOM","Type",
+                                                "Total Calls","Total Qty","Total Occurrence",
+                                                "Occurrence %","Weighted Score"]
+                                   if c in nf_filtered.columns]
+                    st.dataframe(
+                        nf_filtered[nf_all_cols].sort_values("Weighted Score", ascending=False),
+                        width='stretch', height=520,
+                    )
+
+
         if has_workscope and tab_altmat is not None:
             with tab_altmat:
                 st.markdown("#### Is there already-stocked alternate for a part that isn't min-maxed?")
@@ -1045,18 +1116,20 @@ elif page == "📂 Run history":
             except Exception:
                 hist_alt_recs = pd.DataFrame()
         hist_has_alt = not hist_alt_recs.empty
+        hist_nf      = ["❓ Not Found in DB"]      if not run_ws.empty else []
         hist_altmat  = ["🔁 Alternate Materials"] if not run_ws.empty else []
 
-        hist_tabs = st.tabs(hist_base + hist_ws + hist_altmat)
+        hist_tabs = st.tabs(hist_base + hist_ws + hist_nf + hist_altmat)
 
-        ht_ranked  = hist_tabs[0]
-        ht_fleet   = hist_tabs[1]
-        ht_mhrs    = hist_tabs[2]
-        ht_score   = hist_tabs[3]
-        ht_data    = hist_tabs[4]
-        ht_ws      = hist_tabs[5] if len(hist_ws) > 0 else None
-        ht_minmax  = hist_tabs[6] if len(hist_ws) > 0 else None
-        ht_altmat  = hist_tabs[5 + len(hist_ws)] if hist_altmat else None
+        ht_ranked   = hist_tabs[0]
+        ht_fleet    = hist_tabs[1]
+        ht_mhrs     = hist_tabs[2]
+        ht_score    = hist_tabs[3]
+        ht_data     = hist_tabs[4]
+        ht_ws       = hist_tabs[5] if len(hist_ws) > 0 else None
+        ht_minmax   = hist_tabs[6] if len(hist_ws) > 0 else None
+        ht_notfound = hist_tabs[5 + len(hist_ws)] if hist_nf else None
+        ht_altmat   = hist_tabs[5 + len(hist_ws) + len(hist_nf)] if hist_altmat else None
 
         n_fleet_h    = int((run_scores["tier"] == "Fleet-wide").sum()) if not run_scores.empty else 0
         n_common_h   = int((run_scores["tier"] == "Common").sum())     if not run_scores.empty else 0
@@ -1217,11 +1290,13 @@ elif page == "📂 Run history":
 
                 ws_n_ac = int(run_ws["Total Occurrence"].max()) if not run_ws.empty else n_projects
 
-                wk1h, wk2h, wk3h, wk4h = st.columns(4)
+                wk1h, wk2h, wk3h, wk4h, wk5h = st.columns(5)
                 wk1h.metric("Unique parts",         len(run_ws))
                 wk2h.metric("Used on all aircraft", int((run_ws["Total Occurrence"] == ws_n_ac).sum()))
                 wk3h.metric("Not yet min-maxed ❌",  int((run_ws.get("Min-Maxed?","") == "❌ No").sum()))
                 wk4h.metric("Already min-maxed ✅",  int((run_ws.get("Min-Maxed?","") == "✅ Yes").sum()))
+                wk5h.metric("❓ Not found in DB",    int((run_ws.get("Min-Maxed?","") == "—").sum()),
+                            help="See the Not Found in DB tab for details")
 
                 with st.expander("ℹ️ What do Calls and Occurrence mean?"):
                     st.markdown(
@@ -1390,6 +1465,65 @@ elif page == "📂 Run history":
                             )
                             disp_mm_h = [c for c in disp_mm_h if c in mm_h_disp.columns]
                             st.dataframe(mm_h_disp[disp_mm_h], width='stretch')
+
+        # ── Not Found in DB ──────────────────────────────────────────────────
+        if ht_notfound is not None and not run_ws.empty:
+            with ht_notfound:
+                nf_h = run_ws[run_ws["Min-Maxed?"] == "—"] \
+                       if "Min-Maxed?" in run_ws.columns else pd.DataFrame()
+
+                st.markdown("#### Parts that couldn't be checked against the Non-ROP database")
+                st.markdown(
+                    "These parts' status is genuinely **unknown**, not confirmed \"No\" — "
+                    "their Part Number wasn't found anywhere in the Non-ROP database, so "
+                    "there's no record to say whether they're min-maxed or not. This is "
+                    "different from the ❌ **Not yet min-maxed** parts in the Min-Max "
+                    "Recommendation tab, which *were* found in the database with an empty ROP."
+                )
+
+                if nf_h.empty:
+                    st.success(
+                        "✅ Every part in this saved run was successfully matched against "
+                        "the Non-ROP database — nothing to show here."
+                    )
+                else:
+                    nf_ws_n_ac = int(run_ws["Total Occurrence"].max()) if not run_ws.empty else n_projects
+                    nf1h, nf2h, nf3h = st.columns(3)
+                    nf1h.metric("Parts not found in DB", len(nf_h))
+                    nf2h.metric("Of total unique parts",
+                                f"{len(nf_h) / len(run_ws) * 100:.0f}%" if len(run_ws) else "0%")
+                    nf_fleet_h = nf_h[nf_h["Total Occurrence"] == nf_ws_n_ac]
+                    nf3h.metric("Used on all aircraft", len(nf_fleet_h),
+                                help="Highest priority to investigate — these are common parts "
+                                     "with completely unknown stocking status")
+
+                    st.markdown(
+                        "> **For the warehouse/database team:** these Part Numbers likely need "
+                        "to be **added to the Non-ROP database** (or their Part Number format "
+                        "reconciled) before a min-max decision can even be made."
+                    )
+
+                    st.markdown("---")
+                    if not nf_fleet_h.empty:
+                        st.markdown(f"### 🔎 {len(nf_fleet_h)} parts used on all {nf_ws_n_ac} aircraft — highest priority")
+                        nf_fleet_h_sorted = nf_fleet_h.sort_values("Weighted Score", ascending=False)
+                        nf_h_disp_cols = [c for c in ["Part Number","Material Description","UOM","Type",
+                                                       "Total Calls","Total Qty","Total Occurrence",
+                                                       "Occurrence %","Weighted Score"]
+                                          if c in nf_fleet_h_sorted.columns]
+                        st.dataframe(nf_fleet_h_sorted[nf_h_disp_cols], width='stretch',
+                                     height=min(440, len(nf_fleet_h_sorted) * 38 + 50))
+
+                    st.markdown("---")
+                    st.markdown(f"### All {len(nf_h)} unmatched parts")
+                    nf_h_all_cols = [c for c in ["Part Number","Material Description","UOM","Type",
+                                                  "Total Calls","Total Qty","Total Occurrence",
+                                                  "Occurrence %","Weighted Score"]
+                                     if c in nf_h.columns]
+                    st.dataframe(
+                        nf_h[nf_h_all_cols].sort_values("Weighted Score", ascending=False),
+                        width='stretch', height=520,
+                    )
 
         # ── Alternate Materials ──────────────────────────────────────────────
         if ht_altmat is not None:
