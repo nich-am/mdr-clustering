@@ -1120,13 +1120,42 @@ elif page == "📂 Run history":
                             f"  |  {row_h['avg_mhrs']:.1f}h avg"
                         ):
                             if count_cols_h:
+                                # Per-aircraft breakdown available (rare for saved runs)
                                 ac_ch = st.columns(len(count_cols_h))
                                 for i, col in enumerate(count_cols_h):
                                     ac_ch[i].metric(col.replace("count_",""), int(row_h[col]))
+                            else:
+                                # Saved runs only keep the aggregate score row —
+                                # per-aircraft breakdown isn't persisted, so show
+                                # what we do have instead of leaving this blank.
+                                mk1, mk2, mk3 = st.columns(3)
+                                mk1.metric("Total NRCs", int(row_h["total_count"]))
+                                mk2.metric("Aircraft affected",
+                                           int(row_h["projects_count"]) if "projects_count" in row_h else n_projects)
+                                mk3.metric("Avg repair time", f"{row_h['avg_mhrs']:.1f}h")
                     st.markdown("---")
-                    st.plotly_chart(fleet_grouped_bar(run_scores,
-                        [c.replace("count_","") for c in count_cols_h]
-                        if count_cols_h else []), width='stretch')
+                    if count_cols_h:
+                        st.plotly_chart(fleet_grouped_bar(run_scores,
+                            [c.replace("count_","") for c in count_cols_h]), width='stretch')
+                    else:
+                        # No per-aircraft breakdown saved for this run — show a
+                        # score-ranked bar instead of an empty grouped chart.
+                        fleet_h_ranked = fleet_h.copy()
+                        fleet_h_ranked["label"] = fleet_h_ranked["location"] + " — " + fleet_h_ranked["damage_type"]
+                        fig_fleet_h = px.bar(
+                            fleet_h_ranked.sort_values("score"),
+                            x="score", y="label", orientation="h",
+                            color="total_count", color_continuous_scale="Teal",
+                            title="Fleet-wide defects — ranked by score",
+                            labels={"score":"Score","label":"","total_count":"NRC count"},
+                            height=max(350, len(fleet_h_ranked)*30),
+                        )
+                        fig_fleet_h.update_layout(
+                            yaxis=dict(tickfont_size=10),
+                            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                            margin=dict(l=280, r=20, t=50, b=30),
+                        )
+                        st.plotly_chart(fig_fleet_h, width='stretch')
                     st.plotly_chart(frequency_heatmap(run_scores, top_n=25), width='stretch')
 
             # ── Repair Time Impact ────────────────────────────────────────
