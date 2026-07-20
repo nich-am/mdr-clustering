@@ -413,6 +413,21 @@ if page == "🔬 New analysis":
                 "automatically detects repeating defect patterns from free-text titles, "
                 "even when two technicians wrote the same issue differently."
             )
+            with st.expander("ℹ️ What do Clustering and Total Defect mean?"):
+                st.markdown(
+                    "**Clustering** — the app reads every NRC title and groups together the "
+                    "ones describing the same underlying problem, even if they were written "
+                    "with different wording or abbreviations (e.g. \"LH WING CRACK\" and "
+                    "\"WING CRACKED LEFT HAND\" get grouped into the same cluster). Each group "
+                    "is called a **cluster**, and becomes one row in the Common Defects and "
+                    "Fleet-wide tabs. Dots that don't clearly match any group are left "
+                    "unclustered (shown as noise) rather than forced into the wrong group.\n\n"
+                    "**Total Defect** — the total count of individual NRC findings that were "
+                    "successfully placed into a cluster, i.e. matched with at least one other "
+                    "similar finding. This is different from the total number of NRCs "
+                    "uploaded, since some one-off findings may not match anything else closely "
+                    "enough to form a cluster."
+                )
             st.plotly_chart(scatter_map(df, X_2d), width='stretch')
             c1, c2 = st.columns(2)
             with c1:
@@ -552,6 +567,22 @@ if page == "🔬 New analysis":
                 wk2.metric("Used on all aircraft",  stats.get("fleet_wide_parts",0))
                 wk3.metric("Highest score",         f"{stats.get('top_score',0):.0f}")
 
+                with st.expander("ℹ️ What do Calls and Occurrence mean?"):
+                    st.markdown(
+                        "**Calls** — the total number of maintenance events (order calls) "
+                        "across all aircraft analyzed that requested this part. If the same "
+                        "aircraft ordered the same part on 3 different orders, that counts as "
+                        "3 calls.\n\n"
+                        "**Occurrence** — the number of maintenance events that had a request "
+                        "for this material. This counts *distinct events*, not how many times "
+                        "the part was ordered within one event — so an aircraft calling the "
+                        "same part 3 times in one event still counts as 1 occurrence.\n\n"
+                        "**Weighted Score** = Total Calls + (Occurrence × 2). Occurrence is "
+                        "weighted more heavily because a part needed across many separate "
+                        "events is a stronger signal than one event ordering the same part "
+                        "repeatedly."
+                    )
+
                 st.markdown("---")
 
                 fc1, fc2, fc3, fc4 = st.columns(4)
@@ -613,10 +644,10 @@ if page == "🔬 New analysis":
                 renamed_num_cols = (
                     [c.replace("calls_","") + " (calls)" for c in call_ac_cols] +
                     [c.replace("qty_","")   + " (qty)"   for c in qty_ac_cols] +
-                    ["Total Calls","Total Qty","Weighted Score","Reorder Point","Max. level"]
+                    ["Total Calls","Total Qty","Occurrence %","Weighted Score","Reorder Point","Max. level"]
                 )
                 col_cfg = {
-                    c: st.column_config.NumberColumn(format="%g")
+                    c: st.column_config.NumberColumn(format="%g%%" if c == "Occurrence %" else "%g")
                     for c in renamed_num_cols if c in wt_display.columns
                 }
 
@@ -681,13 +712,13 @@ if page == "🔬 New analysis":
                         disp_pp_cols = (
                             ["Part Number", "Material Description", "UOM", "Type"]
                             + ac_qty_display_cols
-                            + ["Total Calls", "Total Qty", "Total Occurrence", "Weighted Score"]
+                            + ["Total Calls", "Total Qty", "Total Occurrence", "Occurrence %", "Weighted Score"]
                         )
                         disp_pp_cols = [c for c in disp_pp_cols if c in pp_display.columns]
 
                         qty_col_cfg = {
-                            c: st.column_config.NumberColumn(format="%g")
-                            for c in ac_qty_display_cols + ["Total Calls", "Total Qty", "Weighted Score"]
+                            c: st.column_config.NumberColumn(format="%g%%" if c == "Occurrence %" else "%g")
+                            for c in ac_qty_display_cols + ["Total Calls", "Total Qty", "Occurrence %", "Weighted Score"]
                             if c in pp_display.columns
                         }
 
@@ -990,6 +1021,11 @@ elif page == "📂 Run history":
             run_scores  = load_run_scores(run_id)
             run_ws      = load_workscope_materials(run_id)
 
+        # Backfill Occurrence % for runs saved before this column existed
+        if not run_ws.empty and "Occurrence %" not in run_ws.columns and "Total Occurrence" in run_ws.columns:
+            _n_ac_backfill = int(run_ws["Total Occurrence"].max()) or 1
+            run_ws["Occurrence %"] = (run_ws["Total Occurrence"] / _n_ac_backfill * 100).round(1)
+
         n_projects = len(run_row.get("aircraft","").split(", ")) if run_row.get("aircraft") else 1
 
         # ── History tabs — mirror the new analysis tab structure ─────────────
@@ -1142,6 +1178,22 @@ elif page == "📂 Run history":
                 wk3h.metric("Not yet min-maxed ❌",  int((run_ws.get("Min-Maxed?","") == "❌ No").sum()))
                 wk4h.metric("Already min-maxed ✅",  int((run_ws.get("Min-Maxed?","") == "✅ Yes").sum()))
 
+                with st.expander("ℹ️ What do Calls and Occurrence mean?"):
+                    st.markdown(
+                        "**Calls** — the total number of maintenance events (order calls) "
+                        "across all aircraft analyzed that requested this part. If the same "
+                        "aircraft ordered the same part on 3 different orders, that counts as "
+                        "3 calls.\n\n"
+                        "**Occurrence** — the number of maintenance events that had a request "
+                        "for this material. This counts *distinct events*, not how many times "
+                        "the part was ordered within one event — so an aircraft calling the "
+                        "same part 3 times in one event still counts as 1 occurrence.\n\n"
+                        "**Weighted Score** = Total Calls + (Occurrence × 2). Occurrence is "
+                        "weighted more heavily because a part needed across many separate "
+                        "events is a stronger signal than one event ordering the same part "
+                        "repeatedly."
+                    )
+
                 st.markdown("---")
 
                 # Filters
@@ -1195,11 +1247,11 @@ elif page == "📂 Run history":
                 h_num_cols = (
                     [c.replace("calls_","") + " (calls)" for c in h_call_cols] +
                     [c.replace("qty_","")   + " (qty)"   for c in h_qty_cols] +
-                    ["Grand Total","Total Calls","Total Qty","Weighted Score",
+                    ["Grand Total","Total Calls","Total Qty","Occurrence %","Weighted Score",
                      "Reorder Point","Max. level"]
                 )
                 h_col_cfg = {
-                    c: st.column_config.NumberColumn(format="%g")
+                    c: st.column_config.NumberColumn(format="%g%%" if c == "Occurrence %" else "%g")
                     for c in h_num_cols if c in wth_disp.columns
                 }
                 st.dataframe(h_styled, width='stretch', height=520, column_config=h_col_cfg)
@@ -1242,12 +1294,12 @@ elif page == "📂 Run history":
                         disp_h_cols = (
                             ["Part Number","Material Description","UOM","Type"]
                             + ac_qty_h
-                            + ["Total Calls","Total Qty","Total Occurrence","Weighted Score"]
+                            + ["Total Calls","Total Qty","Total Occurrence","Occurrence %","Weighted Score"]
                         )
                         disp_h_cols = [c for c in disp_h_cols if c in pp_h_disp.columns]
                         h_qty_cfg = {
-                            c: st.column_config.NumberColumn(format="%g")
-                            for c in ac_qty_h + ["Total Calls","Total Qty","Weighted Score"]
+                            c: st.column_config.NumberColumn(format="%g%%" if c == "Occurrence %" else "%g")
+                            for c in ac_qty_h + ["Total Calls","Total Qty","Occurrence %","Weighted Score"]
                             if c in pp_h_disp.columns
                         }
                         st.dataframe(
