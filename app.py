@@ -660,24 +660,29 @@ if page == "🔬 New analysis":
             with tab_minmax:
                 qty_ac_cols  = [c for c in workscope_table.columns if c.startswith("qty_")]
 
-                all_ac_parts = workscope_table[
+                fleet_wide_all = workscope_table[
                     workscope_table["Total Occurrence"] == n_ac
                 ].sort_values("Weighted Score", ascending=False)
 
-                not_mm_fleet = all_ac_parts[all_ac_parts["Min-Maxed?"] == "❌ No"] \
-                               if not all_ac_parts.empty else all_ac_parts
-                already_mm   = all_ac_parts[all_ac_parts["Min-Maxed?"] == "✅ Yes"] \
-                               if not all_ac_parts.empty else all_ac_parts
-
                 st.markdown("#### Which parts should the warehouse stock ahead of time?")
 
-                if all_ac_parts.empty:
+                if fleet_wide_all.empty:
                     st.info(
                         f"No parts were requested on all {n_ac} aircraft in this batch, "
                         "so there's no fleet-wide stocking recommendation to show. "
                         "Check the **All Materials Used** tab for the full part list."
                     )
                 else:
+                    mm_type_opts = ["All"] + sorted(fleet_wide_all["Type"].dropna().unique().tolist())
+                    mm_type_filter = st.selectbox("Filter by material type", mm_type_opts, key="mm_type")
+                    all_ac_parts = fleet_wide_all if mm_type_filter == "All" \
+                                   else fleet_wide_all[fleet_wide_all["Type"] == mm_type_filter]
+
+                    not_mm_fleet = all_ac_parts[all_ac_parts["Min-Maxed?"] == "❌ No"] \
+                                   if not all_ac_parts.empty else all_ac_parts
+                    already_mm   = all_ac_parts[all_ac_parts["Min-Maxed?"] == "✅ Yes"] \
+                                   if not all_ac_parts.empty else all_ac_parts
+
                     st.markdown(
                         f"**{len(all_ac_parts)}** parts were requested on **every one of the "
                         f"{n_ac} aircraft** in this batch — these are the strongest signals "
@@ -701,10 +706,11 @@ if page == "🔬 New analysis":
                         )
                         st.markdown(
                             "> **For the warehouse team:** the table below shows exactly how "
-                            "many units **each aircraft** called for every part. Use these "
-                            "per-aircraft quantities to estimate a sensible reorder point (ROP) "
-                            "and max stock level — e.g. if an aircraft typically calls 2–4 units "
-                            "per event, a ROP around that range avoids both shortages and overstock."
+                            "many units **each aircraft** called for every part, plus which "
+                            "workcenter(s) requested it. Use the per-aircraft quantities to "
+                            "estimate a sensible reorder point (ROP) and max stock level — "
+                            "e.g. if an aircraft typically calls 2–4 units per event, a ROP "
+                            "around that range avoids both shortages and overstock."
                         )
 
                         pp_display = not_mm_fleet.rename(
@@ -712,7 +718,7 @@ if page == "🔬 New analysis":
                         )
                         ac_qty_display_cols = [c.replace("qty_", "") for c in qty_ac_cols]
                         disp_pp_cols = (
-                            ["Part Number", "Material Description", "UOM", "Type"]
+                            ["Part Number", "Material Description", "UOM", "Type", "Workcenter(s)"]
                             + ac_qty_display_cols
                             + ["Total Calls", "Total Qty", "Total Occurrence", "Occurrence %", "Weighted Score"]
                         )
@@ -767,7 +773,7 @@ if page == "🔬 New analysis":
                             )
                             ac_qty_display_cols2 = [c.replace("qty_", "") for c in qty_ac_cols]
                             disp_mm_cols = (
-                                ["Part Number", "Material Description", "UOM"]
+                                ["Part Number", "Material Description", "UOM", "Workcenter(s)"]
                                 + ac_qty_display_cols2
                                 + ["Total Calls", "Total Qty", "Total Occurrence", "Weighted Score",
                                    "Reorder Point", "Max. level"]
@@ -885,7 +891,7 @@ if page == "🔬 New analysis":
                             "confirm interchangeability with engineering first."
                         )
                         swap_disp_cols = [c for c in [
-                            "Part Number", "Material Description", "Requested Min-Maxed?",
+                            "Part Number", "Material Description", "Type", "Requested Min-Maxed?",
                             "Alternate Part Number", "Alternate Kind", "Alternate Min-Maxed?",
                             "Weighted Score", "Total Occurrence",
                         ] if c in swap_df.columns]
@@ -903,22 +909,27 @@ if page == "🔬 New analysis":
                         "alternate is min-maxed yet, shown here for full traceability."
                     )
 
-                    fk1, fk2 = st.columns(2)
+                    fk1, fk2, fk3 = st.columns(3)
                     req_mm_opts = ["All"] + sorted(alt_mat_recs["Requested Min-Maxed?"].dropna().unique().tolist()) \
                                   if "Requested Min-Maxed?" in alt_mat_recs.columns else ["All"]
                     alt_mm_opts = ["All"] + sorted(alt_mat_recs["Alternate Min-Maxed?"].dropna().unique().tolist())
+                    type_opts   = ["All"] + sorted(alt_mat_recs["Type"].dropna().unique().tolist()) \
+                                  if "Type" in alt_mat_recs.columns else ["All"]
                     sel_req_mm = fk1.selectbox("Requested part status", req_mm_opts)
                     sel_alt_mm = fk2.selectbox("Alternate part status", alt_mm_opts)
+                    sel_type   = fk3.selectbox("Material type", type_opts, key="altmat_type")
 
                     filtered_alt = alt_mat_recs.copy()
                     if sel_req_mm != "All" and "Requested Min-Maxed?" in filtered_alt.columns:
                         filtered_alt = filtered_alt[filtered_alt["Requested Min-Maxed?"] == sel_req_mm]
                     if sel_alt_mm != "All":
                         filtered_alt = filtered_alt[filtered_alt["Alternate Min-Maxed?"] == sel_alt_mm]
+                    if sel_type != "All" and "Type" in filtered_alt.columns:
+                        filtered_alt = filtered_alt[filtered_alt["Type"] == sel_type]
 
                     st.markdown(f"Showing **all {len(filtered_alt)}** matching relationships")
                     all_disp_cols = [c for c in [
-                        "Part Number", "Material Description", "Requested Min-Maxed?",
+                        "Part Number", "Material Description", "Type", "Requested Min-Maxed?",
                         "Alternate Part Number", "Alternate Kind", "Alternate Min-Maxed?",
                         "Weighted Score", "Total Occurrence",
                     ] if c in filtered_alt.columns]
@@ -1091,6 +1102,14 @@ elif page == "📂 Run history":
         if not run_ws.empty and "Occurrence %" not in run_ws.columns and "Total Occurrence" in run_ws.columns:
             _n_ac_backfill = int(run_ws["Total Occurrence"].max()) or 1
             run_ws["Occurrence %"] = (run_ws["Total Occurrence"] / _n_ac_backfill * 100).round(1)
+
+        # Backfill Workcenter(s) for runs saved before this column existed
+        if not run_ws.empty:
+            if "Workcenter(s)" not in run_ws.columns:
+                run_ws["Workcenter(s)"] = "—"
+            else:
+                run_ws["Workcenter(s)"] = run_ws["Workcenter(s)"].fillna("—")
+                run_ws.loc[run_ws["Workcenter(s)"].isin(["", "None", "nan"]), "Workcenter(s)"] = "—"
 
         n_projects = len(run_row.get("aircraft","").split(", ")) if run_row.get("aircraft") else 1
 
@@ -1382,18 +1401,24 @@ elif page == "📂 Run history":
                 ws_n_ac2 = int(run_ws["Total Occurrence"].max()) if not run_ws.empty else n_projects
                 qty_ac_cols_h = [c for c in run_ws.columns if c.startswith("qty_")]
 
-                all_ac_h = run_ws[
+                fleet_wide_h_all = run_ws[
                     run_ws["Total Occurrence"] == ws_n_ac2
                 ].sort_values("Weighted Score", ascending=False)
 
-                not_mm_h  = all_ac_h[all_ac_h["Min-Maxed?"] == "❌ No"]  if not all_ac_h.empty else all_ac_h
-                already_h = all_ac_h[all_ac_h["Min-Maxed?"] == "✅ Yes"] if not all_ac_h.empty else all_ac_h
-
                 st.markdown("#### Which parts should the warehouse stock ahead of time?")
 
-                if all_ac_h.empty:
+                if fleet_wide_h_all.empty:
                     st.info("No parts were requested on every aircraft in this saved run.")
                 else:
+                    h_type_opts = ["All"] + sorted(fleet_wide_h_all["Type"].dropna().unique().tolist()) \
+                                  if "Type" in fleet_wide_h_all.columns else ["All"]
+                    h_mm_type_filter = st.selectbox("Filter by material type", h_type_opts, key="hist_mm_type")
+                    all_ac_h = fleet_wide_h_all if h_mm_type_filter == "All" \
+                               else fleet_wide_h_all[fleet_wide_h_all["Type"] == h_mm_type_filter]
+
+                    not_mm_h  = all_ac_h[all_ac_h["Min-Maxed?"] == "❌ No"]  if not all_ac_h.empty else all_ac_h
+                    already_h = all_ac_h[all_ac_h["Min-Maxed?"] == "✅ Yes"] if not all_ac_h.empty else all_ac_h
+
                     st.markdown(
                         f"**{len(all_ac_h)}** parts were requested on every one of the "
                         f"{ws_n_ac2} aircraft in this run. Of those, **{len(not_mm_h)}** "
@@ -1412,7 +1437,7 @@ elif page == "📂 Run history":
                         )
                         ac_qty_h = [c.replace("qty_","") for c in qty_ac_cols_h]
                         disp_h_cols = (
-                            ["Part Number","Material Description","UOM","Type"]
+                            ["Part Number","Material Description","UOM","Type","Workcenter(s)"]
                             + ac_qty_h
                             + ["Total Calls","Total Qty","Total Occurrence","Occurrence %","Weighted Score"]
                         )
@@ -1458,7 +1483,7 @@ elif page == "📂 Run history":
                             )
                             ac_qty_h2 = [c.replace("qty_","") for c in qty_ac_cols_h]
                             disp_mm_h = (
-                                ["Part Number","Material Description","UOM"]
+                                ["Part Number","Material Description","UOM","Workcenter(s)"]
                                 + ac_qty_h2
                                 + ["Total Calls","Total Qty","Total Occurrence","Weighted Score",
                                    "Reorder Point","Max. level"]
@@ -1569,7 +1594,7 @@ elif page == "📂 Run history":
                             "confirm interchangeability with engineering first."
                         )
                         h_swap_cols = [c for c in [
-                            "Part Number", "Material Description", "Requested Min-Maxed?",
+                            "Part Number", "Material Description", "Type", "Requested Min-Maxed?",
                             "Alternate Part Number", "Alternate Kind", "Alternate Min-Maxed?",
                             "Weighted Score", "Total Occurrence",
                         ] if c in h_swap_df.columns]
@@ -1587,22 +1612,27 @@ elif page == "📂 Run history":
                         "alternate is min-maxed yet, shown here for full traceability."
                     )
 
-                    h_fk1, h_fk2 = st.columns(2)
+                    h_fk1, h_fk2, h_fk3 = st.columns(3)
                     h_req_opts = ["All"] + sorted(hist_alt_recs["Requested Min-Maxed?"].dropna().unique().tolist()) \
                                  if "Requested Min-Maxed?" in hist_alt_recs.columns else ["All"]
                     h_alt_opts = ["All"] + sorted(hist_alt_recs["Alternate Min-Maxed?"].dropna().unique().tolist())
+                    h_type_opts = ["All"] + sorted(hist_alt_recs["Type"].dropna().unique().tolist()) \
+                                  if "Type" in hist_alt_recs.columns else ["All"]
                     h_sel_req = h_fk1.selectbox("Requested part status", h_req_opts, key="hist_alt_req")
                     h_sel_alt = h_fk2.selectbox("Alternate part status", h_alt_opts, key="hist_alt_alt")
+                    h_sel_type = h_fk3.selectbox("Material type", h_type_opts, key="hist_alt_type")
 
                     h_filtered = hist_alt_recs.copy()
                     if h_sel_req != "All" and "Requested Min-Maxed?" in h_filtered.columns:
                         h_filtered = h_filtered[h_filtered["Requested Min-Maxed?"] == h_sel_req]
                     if h_sel_alt != "All":
                         h_filtered = h_filtered[h_filtered["Alternate Min-Maxed?"] == h_sel_alt]
+                    if h_sel_type != "All" and "Type" in h_filtered.columns:
+                        h_filtered = h_filtered[h_filtered["Type"] == h_sel_type]
 
                     st.markdown(f"Showing **all {len(h_filtered)}** matching relationships")
                     h_all_cols = [c for c in [
-                        "Part Number", "Material Description", "Requested Min-Maxed?",
+                        "Part Number", "Material Description", "Type", "Requested Min-Maxed?",
                         "Alternate Part Number", "Alternate Kind", "Alternate Min-Maxed?",
                         "Weighted Score", "Total Occurrence",
                     ] if c in h_filtered.columns]
