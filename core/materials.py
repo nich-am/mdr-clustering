@@ -183,7 +183,7 @@ def build_workscope_material_table(
     Aggregate ALL y-toggle materials across all aircraft for the whole workscope.
 
     Columns produced:
-      Part Number, Material Description, UOM, Type,
+      Part Number, Material Description, UOM, Type, Workcenter(s),
       qty_{ac_reg} for each AC,
       Total Calls, Total Qty,
       Total Occurrence   (how many AC called this part),
@@ -290,13 +290,39 @@ def build_workscope_material_table(
         merged["Reorder Point"] = 0
         merged["Max. level"]    = 0
 
+    # ── Aggregate Workcenter (responsible unit) per part, across all ACs ────
+    # A part can be requested by more than one workcenter across different
+    # orders/aircraft — collect the distinct set as a readable list so the
+    # warehouse team can see who's responsible for managing it.
+    workcenter_frames = []
+    for ac, mrm_df in mrm_dict.items():
+        if "Workcenter" in mrm_df.columns:
+            wc = mrm_df[["Part Number", "Workcenter"]].copy()
+            wc = wc[wc["Workcenter"].notna()]
+            wc["Workcenter"] = wc["Workcenter"].astype(str).str.strip()
+            wc = wc[(wc["Workcenter"] != "") & (wc["Workcenter"].str.lower() != "nan")]
+            workcenter_frames.append(wc)
+
+    if workcenter_frames:
+        wc_all = pd.concat(workcenter_frames, ignore_index=True)
+        wc_summary = (
+            wc_all.groupby("Part Number")["Workcenter"]
+            .agg(lambda x: ", ".join(sorted(set(x))))
+            .reset_index()
+            .rename(columns={"Workcenter": "Workcenter(s)"})
+        )
+        merged = merged.merge(wc_summary, on="Part Number", how="left")
+        merged["Workcenter(s)"] = merged["Workcenter(s)"].fillna("—")
+    else:
+        merged["Workcenter(s)"] = "—"
+
     # Sort by Weighted Score descending
     merged = merged.sort_values("Weighted Score", ascending=False).reset_index(drop=True)
 
     # Reorder columns for display:
     #   calls_{ac} = number of orders that called this part  ← used for scoring
     #   qty_{ac}   = total quantity requested                ← kept for reference
-    front_cols = ["Part Number","Material Description","UOM","Type"]
+    front_cols = ["Part Number","Material Description","UOM","Type","Workcenter(s)"]
     ac_call_cols = call_cols   # e.g. calls_PK-GLV, calls_PK-GLX, calls_PK-GLZ
     ac_qty_cols  = qty_cols    # e.g. qty_PK-GLV,   qty_PK-GLX,   qty_PK-GLZ
     end_cols   = ["Total Calls","Total Qty","Total Occurrence","Occurrence %","Weighted Score",
@@ -386,7 +412,7 @@ def build_alternate_material_recommendations(
     alt["_base_key"] = alt["base_part"].astype(str).str.strip().str.upper()
     alt["_alt_key"]  = alt["alt_part"].astype(str).str.strip().str.upper()
 
-    ws_cols = [c for c in ["Part Number","Material Description","Min-Maxed?",
+    ws_cols = [c for c in ["Part Number","Material Description","Type","Min-Maxed?",
                             "Weighted Score","Total Occurrence"] if c in wt.columns]
 
     # Forward: workscope part is the base part → alternate is alt_part
