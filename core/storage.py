@@ -176,6 +176,7 @@ def save_run(
                 "total_occurrence":     int(row.get("Total Occurrence", 0)),
                 "grand_total":          float(calls_val or 0),
                 "total_qty":            float(qty_val   or 0),
+                "total_actual_consumption": float(row.get("Total Actual Consumption", 0) or 0),
                 "weighted_score":       float(row.get("Weighted Score", 0)),
                 "min_maxed":            str(row.get("Min-Maxed?", "—")),
                 "reorder_point":        float(row.get("Reorder Point", 0) or 0),
@@ -183,7 +184,20 @@ def save_run(
             })
         try:
             for i in range(0, len(ws_rows), 100):
-                sb.table("workscope_materials").insert(ws_rows[i:i+100]).execute()
+                try:
+                    sb.table("workscope_materials").insert(ws_rows[i:i+100]).execute()
+                except Exception as inner_e:
+                    # Column may not exist yet if the Supabase schema hasn't been
+                    # migrated for total_actual_consumption — retry without it so
+                    # older schemas keep working until the column is added.
+                    if "total_actual_consumption" in str(inner_e).lower():
+                        stripped = [
+                            {k: v for k, v in row.items() if k != "total_actual_consumption"}
+                            for row in ws_rows[i:i+100]
+                        ]
+                        sb.table("workscope_materials").insert(stripped).execute()
+                    else:
+                        raise
         except Exception as e:
             st.warning(f"Could not save workscope materials: {e}")
 
@@ -281,6 +295,7 @@ def load_workscope_materials(run_id: str) -> pd.DataFrame:
             "total_occurrence":     "Total Occurrence",
             "grand_total":          "Total Calls",
             "total_qty":            "Total Qty",
+            "total_actual_consumption": "Total Actual Consumption",
             "weighted_score":       "Weighted Score",
             "min_maxed":            "Min-Maxed?",
             "reorder_point":        "Reorder Point",

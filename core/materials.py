@@ -80,6 +80,59 @@ def load_rop_db(fileobj) -> pd.DataFrame:
     return df[keep].reset_index(drop=True)
 
 
+# ── Load Actual Consumption transactions ───────────────────────────────────
+# Movement types where a negative Quantity means the material was actually
+# consumed/issued, and a positive Quantity means it was returned/reversed
+# (i.e. un-consumed) back into stock on the SAME order.
+_CONSUME_MVT = {"963", "965", "Z02", "Z04"}   # issues — negative qty
+_RETURN_MVT  = {"964", "Z11", "Z12"}          # reversals/removes — positive qty
+
+def load_actual_consumption(fileobj) -> pd.DataFrame:
+    """
+    Read a SAP goods-movement transaction export (consume + reversal rows)
+    and net them per Order + Material to get the TRUE actual consumption.
+
+    A part issued then later reversed on the same order nets to ~0 —
+    this is exactly why we can't just sum "Unplanned Issue" rows alone.
+
+    Expected columns: MvT, Order, Material, Material Description, Quantity, BUn
+    (matches the raw SAP export format, e.g. Actual_Consumption_*.xlsx)
+
+    Returns a DataFrame with one row per Order + Material:
+        Order, Part Number, Actual Consumption Qty, UOM
+    Net quantity is signed (can be negative if returns exceed issues —
+    shown as-is, not clipped, since that usually flags a data issue worth
+    investigating rather than hiding).
+    """
+    df = pd.read_excel(fileobj)
+    df.columns = df.columns.str.strip()
+
+    required = {"Order", "Material", "Quantity"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Actual consumption file missing columns: {missing}")
+
+    df["Order"]    = df["Order"].astype(str).str.strip()
+    df["Material"] = df["Material"].astype(str).str.strip()
+
+    uom_col = "BUn" if "BUn" in df.columns else ("EUn" if "EUn" in df.columns else None)
+
+    grouped = (
+        df.groupby(["Order", "Material"], as_index=False)
+        .agg(**{
+            "Actual Consumption Qty": ("Quantity", "sum"),
+            **({"UOM": (uom_col, "first")} if uom_col else {}),
+        })
+    )
+    # Net consumption = -(sum of signed transaction quantities)
+    # Issues are negative, reversals/returns are positive in the source data,
+    # so negating gives a positive "amount consumed" figure — but we leave
+    # the sign as computed (not clipped) per the requirement to show it as-is.
+    grouped["Actual Consumption Qty"] = (-grouped["Actual Consumption Qty"]).round(2)
+    grouped = grouped.rename(columns={"Material": "Part Number"})
+    return grouped.reset_index(drop=True)
+
+
 # ── A) Per-defect material detail ─────────────────────────────────────────
 def join_materials_to_nrc(nrc_df: pd.DataFrame, mrm_df: pd.DataFrame) -> pd.DataFrame:
     """Left-join MRM onto NRC via Order No."""
@@ -178,6 +231,7 @@ def top_parts_across_fleet(mat_detail: pd.DataFrame, min_ac: int = 2) -> pd.Data
 def build_workscope_material_table(
     mrm_dict: dict,                     # {ac_reg: mrm_df}
     rop_db: pd.DataFrame = None,        # from load_rop_db(), optional
+    consumption_dict: dict = None,      # {ac_reg: consumption_df}, optional
 ) -> pd.DataFrame:
     """
     Aggregate ALL y-toggle materials across all aircraft for the whole workscope.
@@ -185,13 +239,19 @@ def build_workscope_material_table(
     Columns produced:
       Part Number, Material Description, UOM, Type, Workcenter(s),
       qty_{ac_reg} for each AC,
+      consumed_{ac_reg} for each AC   (only if consumption_dict provided),
       Total Calls, Total Qty,
+      Total Actual Consumption        (only if consumption_dict provided),
       Total Occurrence   (how many AC called this part),
       Occurrence %       = Total Occurrence / total AC count × 100,
       Weighted Score     = Total Calls + (Total Occurrence × 2),
       Min-Maxed?         (Yes / No from ROP DB, or N/A if no DB uploaded),
       Reorder Point,
       Max. Level
+
+    consumption_dict values come from load_actual_consumption(), keyed with
+    one row per Order + Part Number. Since this table is Part-Number-level
+    (not per-order), consumption is summed across all orders for that AC.
     """
     if not mrm_dict:
         return pd.DataFrame()
@@ -231,6 +291,29 @@ def build_workscope_material_table(
             merged[col] = 0
     merged[call_cols] = merged[call_cols].fillna(0).astype(int)
     merged[qty_cols]  = merged[qty_cols].fillna(0).round(2)
+
+    # ── Merge actual consumption (optional) ─────────────────────────────────
+    # consumption_dict values are per Order + Part Number (net of reversals).
+    # This table is Part-Number-level, so sum consumption across all orders
+    # for each AC to get one consumed_{ac} figure per part.
+    has_consumption = bool(consumption_dict)
+    consumed_cols = []
+    if has_consumption:
+        consumed_cols = [f"consumed_{ac}" for ac in ac_regs]
+        for ac in ac_regs:
+            cons_df = consumption_dict.get(ac)
+            col_name = f"consumed_{ac}"
+            if cons_df is None or cons_df.empty:
+                merged[col_name] = 0.0
+                continue
+            per_part = (
+                cons_df.groupby("Part Number", as_index=False)["Actual Consumption Qty"]
+                .sum()
+                .rename(columns={"Actual Consumption Qty": col_name})
+            )
+            merged = merged.merge(per_part, on="Part Number", how="left")
+            merged[col_name] = merged[col_name].fillna(0).round(2)
+        merged["Total Actual Consumption"] = merged[consumed_cols].sum(axis=1).round(2)
 
     # Derived columns
     # Total Calls      = number of order-calls across all ACs (used for scoring)
@@ -320,18 +403,26 @@ def build_workscope_material_table(
     merged = merged.sort_values("Weighted Score", ascending=False).reset_index(drop=True)
 
     # Reorder columns for display:
-    #   calls_{ac} = number of orders that called this part  ← used for scoring
-    #   qty_{ac}   = total quantity requested                ← kept for reference
+    #   calls_{ac}    = number of orders that called this part  ← used for scoring
+    #   qty_{ac}      = total quantity requested                ← kept for reference
+    #   consumed_{ac} = net actual consumption (issues − reversals), if available
     front_cols = ["Part Number","Material Description","UOM","Type","Workcenter(s)"]
     ac_call_cols = call_cols   # e.g. calls_PK-GLV, calls_PK-GLX, calls_PK-GLZ
     ac_qty_cols  = qty_cols    # e.g. qty_PK-GLV,   qty_PK-GLX,   qty_PK-GLZ
-    end_cols   = ["Total Calls","Total Qty","Total Occurrence","Occurrence %","Weighted Score",
-                  "Min-Maxed?","Reorder Point","Max. level"]
+    end_cols = ["Total Calls","Total Qty"]
+    if has_consumption:
+        end_cols += consumed_cols + ["Total Actual Consumption"]
+    end_cols += ["Total Occurrence","Occurrence %","Weighted Score",
+                 "Min-Maxed?","Reorder Point","Max. level"]
     all_cols   = front_cols + ac_call_cols + ac_qty_cols + end_cols
     result = merged[[c for c in all_cols if c in merged.columns]].copy()
 
     # Smart number formatting: whole numbers shown without decimals
-    numeric_display_cols = call_cols + qty_cols + ["Total Calls","Total Qty","Occurrence %","Weighted Score","Reorder Point","Max. level"]
+    numeric_display_cols = (
+        call_cols + qty_cols + consumed_cols +
+        ["Total Calls","Total Qty","Total Actual Consumption",
+         "Occurrence %","Weighted Score","Reorder Point","Max. level"]
+    )
     for col in numeric_display_cols:
         if col not in result.columns:
             continue
