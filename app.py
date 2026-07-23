@@ -23,7 +23,7 @@ from core.materials  import (load_mrm, build_material_summary, summarise_by_defe
                              top_parts_across_fleet, load_rop_db,
                              build_workscope_material_table, workscope_table_stats,
                              load_alt_mat_db, build_alternate_material_recommendations,
-                             alt_mat_stats)
+                             alt_mat_stats, load_actual_consumption)
 from core.pdf_export import generate_pdf
 from core.storage    import (
     save_run, load_run_history, load_run_scores,
@@ -88,7 +88,9 @@ with st.sidebar:
         st.markdown(
             "For each aircraft upload:\n"
             "- **Findings** `_MDR_TRACKING_*.xlsx`\n"
-            "- **Materials** `_MRM_TRACKING_*.xlsx` *(optional)*"
+            "- **Materials** `_MRM_TRACKING_*.xlsx` *(optional)*\n"
+            "- **Actual Consumption** `Actual_Consumption_*.xlsx` *(optional, "
+            "SAP goods-movement export)*"
         )
 
         n_files = st.number_input("Number of aircraft", min_value=1, max_value=10, value=3)
@@ -109,12 +111,14 @@ with st.sidebar:
                     key=f"rev_{i}", placeholder="e.g. 00221737",
                     label_visibility="collapsed",
                 )
-            nrc_file = st.file_uploader("Findings (MDR)", type=["xlsx","xls"], key=f"nrc_{i}")
-            mrm_file = st.file_uploader("Materials (MRM)", type=["xlsx","xls"], key=f"mrm_{i}")
+            nrc_file  = st.file_uploader("Findings (MDR)", type=["xlsx","xls"], key=f"nrc_{i}")
+            mrm_file  = st.file_uploader("Materials (MRM)", type=["xlsx","xls"], key=f"mrm_{i}")
+            cons_file = st.file_uploader("Actual Consumption (optional)", type=["xlsx","xls"], key=f"cons_{i}")
             label = f"{ac_reg} ({rev_no})" if rev_no else ac_reg
             ac_entries.append({
                 "label": label, "ac_reg": ac_reg,
                 "rev_no": rev_no, "nrc_file": nrc_file, "mrm_file": mrm_file,
+                "cons_file": cons_file,
             })
             st.markdown("---")
 
@@ -172,6 +176,14 @@ if page == "🔬 New analysis":
                             except Exception as ex:
                                 st.warning(f"MRM load error ({e['label']}): {ex}")
 
+                    consumption_dict = {}
+                    for e in ac_entries:
+                        if e.get("cons_file") is not None and e["label"] in nrc_uploads:
+                            try:
+                                consumption_dict[e["label"]] = load_actual_consumption(e["cons_file"])
+                            except Exception as ex:
+                                st.warning(f"Actual consumption load error ({e['label']}): {ex}")
+
                     mat_detail = mat_summary = top_parts = pd.DataFrame()
                     workscope_table = pd.DataFrame()
                     rop_db = pd.DataFrame()
@@ -195,6 +207,7 @@ if page == "🔬 New analysis":
                         workscope_table = build_workscope_material_table(
                             mrm_dict,
                             rop_db=rop_db if not rop_db.empty else None,
+                            consumption_dict=consumption_dict if consumption_dict else None,
                         )
 
                         # Load bundled Alternate Material database and build recommendations
@@ -217,13 +230,15 @@ if page == "🔬 New analysis":
                         "mat_summary": mat_summary, "top_parts": top_parts,
                         "workscope_table": workscope_table, "rop_db": rop_db,
                         "alt_mat_recs": alt_mat_recs,
+                        "consumption_dict": consumption_dict,
                         "workscope": workscope, "ac_type": ac_type, "notes": notes,
                     })
                     st.session_state.results = results
+                    cons_msg = f" · {len(consumption_dict)} consumption file(s) loaded." if consumption_dict else ""
                     st.success(
                         f"Done! {len(results['df'])} NRCs · "
                         f"{len(results['projects'])} aircraft · "
-                        f"{len(mrm_dict)} MRM file(s) loaded."
+                        f"{len(mrm_dict)} MRM file(s) loaded.{cons_msg}"
                     )
                 except Exception as e:
                     st.error(f"Pipeline error: {e}")
@@ -241,12 +256,14 @@ if page == "🔬 New analysis":
         workscope_table = R.get("workscope_table", pd.DataFrame())
         rop_db          = R.get("rop_db", pd.DataFrame())
         alt_mat_recs    = R.get("alt_mat_recs", pd.DataFrame())
+        consumption_dict = R.get("consumption_dict", {})
         workscope       = R.get("workscope", workscope or "")
         ac_type         = R.get("ac_type",   ac_type   or "")
         notes           = R.get("notes",     notes     or "")
         has_mrm         = not mat_detail.empty
         has_workscope   = not workscope_table.empty
         has_alt_mat     = not alt_mat_recs.empty
+        has_consumption = bool(consumption_dict) and "Total Actual Consumption" in workscope_table.columns
 
         n_clustered = (df["cluster_id"] != -1).sum()
         n_clusters  = df[df["cluster_id"] != -1]["cluster_id"].nunique()
@@ -561,6 +578,12 @@ if page == "🔬 New analysis":
                     f"total. Use this as a master reference; for stocking recommendations "
                     "specifically, see the **Min-Max Recommendation** tab."
                 )
+                if has_consumption:
+                    st.markdown(
+                        "🧾 **Actual consumption** columns are also shown — netted from SAP "
+                        "goods-movement transactions (issues minus reversals on the same order), "
+                        "so a part that was requested but later returned won't inflate the numbers."
+                    )
 
                 wk1, wk2, wk3, wk4 = st.columns(4)
                 wk1.metric("Unique parts",          stats.get("total_unique_parts",0))
@@ -633,9 +656,11 @@ if page == "🔬 New analysis":
 
                 call_ac_cols = [c for c in wt.columns if c.startswith("calls_")]
                 qty_ac_cols  = [c for c in wt.columns if c.startswith("qty_")]
+                cons_ac_cols = [c for c in wt.columns if c.startswith("consumed_")]
                 rename_map   = {
                     **{c: c.replace("calls_","") + " (calls)" for c in call_ac_cols},
                     **{c: c.replace("qty_","")   + " (qty)"   for c in qty_ac_cols},
+                    **{c: c.replace("consumed_","") + " (consumed)" for c in cons_ac_cols},
                 }
                 wt_display  = wt.rename(columns=rename_map)
 
@@ -646,7 +671,9 @@ if page == "🔬 New analysis":
                 renamed_num_cols = (
                     [c.replace("calls_","") + " (calls)" for c in call_ac_cols] +
                     [c.replace("qty_","")   + " (qty)"   for c in qty_ac_cols] +
-                    ["Total Calls","Total Qty","Occurrence %","Weighted Score","Reorder Point","Max. level"]
+                    [c.replace("consumed_","") + " (consumed)" for c in cons_ac_cols] +
+                    ["Total Calls","Total Qty","Total Actual Consumption",
+                     "Occurrence %","Weighted Score","Reorder Point","Max. level"]
                 )
                 col_cfg = {
                     c: st.column_config.NumberColumn(format="%g%%" if c == "Occurrence %" else "%g")
@@ -720,15 +747,27 @@ if page == "🔬 New analysis":
                         disp_pp_cols = (
                             ["Part Number", "Material Description", "UOM", "Type", "Workcenter(s)"]
                             + ac_qty_display_cols
-                            + ["Total Calls", "Total Qty", "Total Occurrence", "Occurrence %", "Weighted Score"]
+                            + ["Total Calls", "Total Qty"]
+                            + (["Total Actual Consumption"] if has_consumption else [])
+                            + ["Total Occurrence", "Occurrence %", "Weighted Score"]
                         )
                         disp_pp_cols = [c for c in disp_pp_cols if c in pp_display.columns]
 
                         qty_col_cfg = {
                             c: st.column_config.NumberColumn(format="%g%%" if c == "Occurrence %" else "%g")
-                            for c in ac_qty_display_cols + ["Total Calls", "Total Qty", "Occurrence %", "Weighted Score"]
+                            for c in ac_qty_display_cols + ["Total Calls", "Total Qty",
+                                                             "Total Actual Consumption",
+                                                             "Occurrence %", "Weighted Score"]
                             if c in pp_display.columns
                         }
+
+                        if has_consumption:
+                            st.caption(
+                                "💡 **Total Actual Consumption** (from SAP goods-movement data) "
+                                "shows what was truly used, net of returns — compare it against "
+                                "**Total Qty** (requested) to spot over-requesting patterns and "
+                                "size the ROP against real usage, not just what was ordered."
+                            )
 
                         st.dataframe(
                             pp_display[disp_pp_cols],
