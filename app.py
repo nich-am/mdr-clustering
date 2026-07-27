@@ -168,8 +168,41 @@ with st.sidebar:
             st.markdown("---")
 
         st.markdown("### 2 · Run settings")
-        min_cluster  = st.slider("Min cluster size", 3, 20, 5)
-        top_n_score  = st.slider("Top N defects",   10, 50, 25)
+        min_cluster  = st.slider(
+            "Min cluster size", 3, 20, 5,
+            help="The smallest number of similar NRC titles the app will "
+                 "group into a defect pattern. Lower it to catch smaller, "
+                 "less common repeating issues; raise it to only surface "
+                 "clearly recurring, high-confidence patterns.",
+        )
+        top_n_score  = st.slider(
+            "Top N defects", 10, 50, 50,
+            help="How many of the highest-scoring defects to show in charts "
+                 "and tables like Common Defects, Repair Time Impact, and "
+                 "Full Data Table. This only limits what's displayed — every "
+                 "detected defect is still included in the underlying data "
+                 "and exports.",
+        )
+        with st.expander("ℹ️ How do I choose Min cluster size?"):
+            st.markdown(
+                "**Min cluster size** controls how many similar NRC titles "
+                "need to appear before the app calls it a defect pattern, "
+                "rather than a one-off finding.\n\n"
+                "| Value | Effect |\n"
+                "|---|---|\n"
+                "| **3–4** | More clusters, catches smaller/rarer patterns — "
+                "can be noisier and split similar issues into near-duplicate "
+                "groups. |\n"
+                "| **5** *(default)* | Good balance for most workscopes — "
+                "recommended starting point. |\n"
+                "| **8–10** | Fewer, tighter clusters — only the clearest, "
+                "most obviously repeating patterns get grouped; smaller "
+                "patterns are left as unclustered/one-off findings. |\n\n"
+                "**When to raise it:** if you're seeing many near-duplicate "
+                "cluster labels for what's clearly the same defect.\n\n"
+                "**When to lower it:** if you suspect real repeating defects "
+                "are being missed and showing up only as isolated one-offs."
+            )
 
         st.markdown("### 3 · Run metadata")
         workscope = st.text_input("Workscope", placeholder="e.g. 6Y+12Y C-Check")
@@ -1293,7 +1326,7 @@ elif page == "📂 Run history":
                 tf_h = st.radio("Filter by tier", ["All","Fleet-wide","Common","Isolated"],
                                 horizontal=True, key="hist_tier")
                 filt_h = run_scores if tf_h == "All" else run_scores[run_scores["tier"] == tf_h]
-                st.plotly_chart(ranked_bar(filt_h, top_n=25), width='stretch')
+                st.plotly_chart(ranked_bar(filt_h, top_n=50), width='stretch')
                 c1h, c2h = st.columns(2)
                 with c1h: st.plotly_chart(tier_donut(run_scores), width='stretch')
                 with c2h:
@@ -1360,7 +1393,7 @@ elif page == "📂 Run history":
                             margin=dict(l=280, r=20, t=50, b=30),
                         )
                         st.plotly_chart(fig_fleet_h, width='stretch')
-                    st.plotly_chart(frequency_heatmap(run_scores, top_n=25), width='stretch')
+                    st.plotly_chart(frequency_heatmap(run_scores, top_n=50), width='stretch')
 
             # ── Repair Time Impact ────────────────────────────────────────
             with ht_mhrs:
@@ -1372,7 +1405,7 @@ elif page == "📂 Run history":
                         f"The most time-consuming defect is **{c0h['location']} — {c0h['damage_type']}**, "
                         f"averaging **{c0h['avg_mhrs']:.1f} hours** per repair."
                     )
-                st.plotly_chart(manhour_bar(run_scores, top_n=25), width='stretch')
+                st.plotly_chart(manhour_bar(run_scores, top_n=50), width='stretch')
 
             # ── How Scoring Works ─────────────────────────────────────────
             with ht_score:
