@@ -23,7 +23,8 @@ from core.materials  import (load_mrm, build_material_summary, summarise_by_defe
                              top_parts_across_fleet, load_rop_db,
                              build_workscope_material_table, workscope_table_stats,
                              load_alt_mat_db, build_alternate_material_recommendations,
-                             alt_mat_stats, load_actual_consumption)
+                             alt_mat_stats, load_actual_consumption, load_chem_db,
+                             apply_chem_override)
 from core.pdf_export import generate_pdf
 from core.storage    import (
     save_run, load_run_history, load_run_scores,
@@ -188,6 +189,7 @@ if page == "🔬 New analysis":
                     workscope_table = pd.DataFrame()
                     rop_db = pd.DataFrame()
                     alt_mat_recs = pd.DataFrame()
+                    chem_parts = set()
 
                     # Load Non-ROP database from bundled file
                     try:
@@ -200,14 +202,28 @@ if page == "🔬 New analysis":
                         st.warning(f"Could not load Non-ROP DB: {ex}")
                         rop_db = pd.DataFrame()
 
+                    # Load Chemical Materials database from bundled file
+                    try:
+                        chem_path = os.path.join(
+                            os.path.dirname(__file__), "data", "chemical_database.xlsx"
+                        )
+                        chem_parts = load_chem_db(open(chem_path, "rb"))
+                    except Exception as ex:
+                        st.warning(f"Could not load Chemical Materials DB: {ex}")
+                        chem_parts = set()
+
                     if mrm_dict:
-                        mat_detail      = build_material_summary(results["df"], mrm_dict, results["scores"])
+                        mat_detail      = build_material_summary(
+                            results["df"], mrm_dict, results["scores"],
+                            chem_parts=chem_parts,
+                        )
                         mat_summary     = summarise_by_defect(mat_detail)
                         top_parts       = top_parts_across_fleet(mat_detail)
                         workscope_table = build_workscope_material_table(
                             mrm_dict,
                             rop_db=rop_db if not rop_db.empty else None,
                             consumption_dict=consumption_dict if consumption_dict else None,
+                            chem_parts=chem_parts if chem_parts else None,
                         )
 
                         # Load bundled Alternate Material database and build recommendations
@@ -1149,6 +1165,18 @@ elif page == "📂 Run history":
             else:
                 run_ws["Workcenter(s)"] = run_ws["Workcenter(s)"].fillna("—")
                 run_ws.loc[run_ws["Workcenter(s)"].isin(["", "None", "nan"]), "Workcenter(s)"] = "—"
+
+        # Backfill CHEM type override for runs saved before the chemical
+        # database was integrated — re-applies the same override live using
+        # the bundled reference list, so older saved runs stay consistent
+        # with new analyses without needing a re-run.
+        if not run_ws.empty and "Type" in run_ws.columns:
+            try:
+                hist_chem_path = os.path.join(os.path.dirname(__file__), "data", "chemical_database.xlsx")
+                hist_chem_parts = load_chem_db(open(hist_chem_path, "rb"))
+                run_ws = apply_chem_override(run_ws, hist_chem_parts)
+            except Exception:
+                pass
 
         n_projects = len(run_row.get("aircraft","").split(", ")) if run_row.get("aircraft") else 1
 
