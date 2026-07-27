@@ -91,8 +91,40 @@ with st.sidebar:
             "- **Findings** `_MDR_TRACKING_*.xlsx`\n"
             "- **Materials** `_MRM_TRACKING_*.xlsx` *(optional)*\n"
             "- **Actual Consumption** `Actual_Consumption_*.xlsx` *(optional, "
-            "SAP goods-movement export)*"
+            "SAP goods-movement export — see below for how to pull this)*"
         )
+
+        with st.expander("ℹ️ How to get the Actual Consumption file from SAP (MB51)"):
+            st.markdown(
+                "The Actual Consumption file comes from SAP transaction **MB51** "
+                "(Material Document List), filtered to the maintenance event's "
+                "order numbers. Steps:\n\n"
+                "1. Open transaction **MB51** in SAP.\n"
+                "2. In the **Order** field, enter the **MDR order number(s)** for "
+                "this maintenance event. You can enter a range or a multiple "
+                "selection (click the ⌷ icon next to the field) to pull all "
+                "orders for that aircraft/revision at once — this way both the "
+                "consume and any reversal transactions on those orders are "
+                "captured together.\n"
+                "3. Leave **Material** and **Plant** blank so all materials tied "
+                "to those orders are pulled, not just one part.\n"
+                "4. Execute (**F8**).\n"
+                "5. From the results list, make sure these columns are visible "
+                "(add via **Change Layout**, Ctrl+F8, if missing): "
+                "`MvT` (Movement Type), `Order`, `Material`, "
+                "`Material Description`, `Quantity`, `BUn`.\n"
+                "6. Export the list to Excel (**List → Export → Spreadsheet**, "
+                "or the export icon) and save as `.xlsx`.\n"
+                "7. Upload that file here as the **Actual Consumption** file for "
+                "the matching aircraft.\n\n"
+                "**Why include reversals:** if a part was issued and later "
+                "reversed/returned on the same order, MB51 will show both "
+                "transactions. The app nets these against each other "
+                "automatically, so leaving reversal rows in the export (instead "
+                "of filtering them out) gives the true actual-consumption figure "
+                "rather than double-counting parts that were requested but never "
+                "really used."
+            )
 
         n_files = st.number_input("Number of aircraft", min_value=1, max_value=10, value=3)
 
@@ -112,9 +144,21 @@ with st.sidebar:
                     key=f"rev_{i}", placeholder="e.g. 00221737",
                     label_visibility="collapsed",
                 )
-            nrc_file  = st.file_uploader("Findings (MDR)", type=["xlsx","xls"], key=f"nrc_{i}")
-            mrm_file  = st.file_uploader("Materials (MRM)", type=["xlsx","xls"], key=f"mrm_{i}")
-            cons_file = st.file_uploader("Actual Consumption (optional)", type=["xlsx","xls"], key=f"cons_{i}")
+            nrc_file  = st.file_uploader(
+                "Findings (MDR)", type=["xlsx","xls"], key=f"nrc_{i}",
+                help="The _MDR_TRACKING_*.xlsx export listing NRC findings for this aircraft.",
+            )
+            mrm_file  = st.file_uploader(
+                "Materials (MRM)", type=["xlsx","xls"], key=f"mrm_{i}",
+                help="The _MRM_TRACKING_*.xlsx export listing material requests "
+                     "(toggle = Y rows) linked to this aircraft's orders.",
+            )
+            cons_file = st.file_uploader(
+                "Actual Consumption (optional)", type=["xlsx","xls"], key=f"cons_{i}",
+                help="SAP MB51 export for this aircraft's MDR order number(s), "
+                     "including both issue and reversal transactions — see the "
+                     "'How to get this file' guide above.",
+            )
             label = f"{ac_reg} ({rev_no})" if rev_no else ac_reg
             ac_entries.append({
                 "label": label, "ac_reg": ac_reg,
@@ -1089,12 +1133,13 @@ if page == "🔬 New analysis":
         st.info("👈 Upload NRC files in the sidebar and click **Run analysis**.")
         st.markdown("---")
         st.markdown("### How it works")
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
         c1.markdown("**1 · Upload**\nMDR + optional MRM per aircraft.")
         c2.markdown("**2 · Cluster**\nTF-IDF → UMAP → HDBSCAN.")
         c3.markdown("**3 · Score**\nWeighted EDA by presence, frequency & manhours.")
         c4.markdown("**4 · Materials**\nJoins MRM (toggle=Y) via Order No.")
-        c5.markdown("**5 · Save**\nStores run to Supabase + export PDF/Excel.")
+        c5.markdown("**5 · Consumption**\nOptional SAP MB51 export nets issues vs. reversals.")
+        c6.markdown("**6 · Save**\nStores run to Supabase + export PDF/Excel.")
 
 
 # ════════════════════════════════════════════════════════════════════════════

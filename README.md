@@ -34,7 +34,9 @@ mdr-clustering/
 │   ├── charts.py             ← Plotly chart builders
 │   └── pdf_export.py         ← WeasyPrint PDF generation
 ├── data/
-│   └── rop_database.xlsx     ← Non-ROP / min-max database (bundled)
+│   ├── rop_database.xlsx      ← Non-ROP / min-max database (bundled)
+│   ├── alt_material_database.xlsx  ← alternate/interchangeable parts list (bundled)
+│   └── chemical_database.xlsx      ← chemical materials reference list (bundled)
 └── .streamlit/
     └── config.toml           ← theme config (dark mode)
 ```
@@ -98,6 +100,73 @@ Material request file. Only rows with `Toggle = Y` are used.
 | `Reorder Point` | Current reorder point |
 | `Max. level` | Current max stock level |
 | `ObjectType` | Aircraft type filter (e.g. `737-800`) |
+
+### Actual Consumption file (optional — one per aircraft, from SAP MB51)
+
+Nets true material usage per Order + Part Number by combining consume and
+reversal transactions, so a part that was issued then later returned on the
+same order doesn't inflate the "requested" figures.
+
+**How to pull it from SAP:**
+
+1. Open transaction **MB51** (Material Document List).
+2. In the **Order** field, enter the **MDR order number(s)** for the
+   maintenance event. Use a range or multiple selection (⌷ icon) to grab
+   all orders for that aircraft/revision in one export — this ensures both
+   the issue and any reversal transactions on those orders are captured.
+3. Leave **Material** and **Plant** blank so every part tied to those
+   orders comes through, not just one.
+4. Execute (**F8**).
+5. Confirm these columns are in the result layout (add via **Change
+   Layout**, Ctrl+F8, if missing): `MvT`, `Order`, `Material`,
+   `Material Description`, `Quantity`, `BUn`.
+6. Export to Excel (**List → Export → Spreadsheet**) and save as `.xlsx`.
+7. Upload as the Actual Consumption file for that aircraft.
+
+| Column | Description |
+|--------|-------------|
+| `MvT` | SAP movement type — determines sign (see below) |
+| `Order` | Links to NRC `Order No` / MRM `Order` |
+| `Material` | `PN:VendorCode`, same format as MRM `Part Number` |
+| `Quantity` | Signed transaction quantity |
+| `BUn` | Unit of measure |
+
+**Movement type sign convention** (used to net consume vs. reversal):
+
+| MvT | Meaning | Sign |
+|-----|---------|------|
+| 963, 965, Z02, Z04 | Issue (consumed) | Negative |
+| 964, Z11, Z12 | Reversal / Remove (returned) | Positive |
+
+Net consumption per Order + Part = `-(sum of Quantity)`. Do **not** filter
+out reversal rows before exporting — leaving them in is what lets the app
+compute true net consumption instead of double-counting parts that were
+requested but never actually used. If returns end up exceeding issues
+(a data anomaly), the result is shown as a negative value rather than
+clipped to zero, so it stays visible for investigation.
+
+### Chemical Materials database (optional — loaded from `data/chemical_database.xlsx`)
+
+A reference list of Part Numbers that are chemical materials. Any part
+found here has its `Type` overwritten to `CHEM` in every material table,
+regardless of what Type the MRM file originally assigned (e.g. `EXP`).
+
+| Column | Description |
+|--------|-------------|
+| `Material` | `PN:VendorCode` — join key matched against MRM `Part Number` |
+| `MPN` | Bare part number (fallback if `Material` is missing) |
+
+### Alternate Materials database (optional — loaded from `data/alt_material_database.xlsx`)
+
+Maps parts to known interchangeable alternates, used to flag "swap
+opportunities" — a requested part with no min-max plan whose alternate is
+already min-maxed.
+
+| Column | Description |
+|--------|-------------|
+| `base_part` | The originally requested Part Number |
+| `alt_part` | The interchangeable alternate Part Number |
+| `alt_kind` | Relationship type (e.g. Leading Part) |
 
 ---
 
