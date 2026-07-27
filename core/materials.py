@@ -80,7 +80,47 @@ def load_rop_db(fileobj) -> pd.DataFrame:
     return df[keep].reset_index(drop=True)
 
 
-# ── Load Actual Consumption transactions ───────────────────────────────────
+# ── Load Chemical Materials reference database ──────────────────────────────
+def load_chem_db(fileobj) -> set:
+    """
+    Read the GMF Chemical Materials list and return a set of Part Numbers
+    (in the same "PN:SLOC" format used everywhere else — e.g. "LVO130:GMFDM").
+
+    Any part found in this set should be shown with Type = "CHEM",
+    overriding whatever Type came from the MRM file (e.g. EXP, ROT1, REP) —
+    the MRM's Type field is a procurement category, not a hazard/handling
+    classification, so a part can be tagged EXP there and still be a
+    chemical that needs special handling.
+    """
+    df = pd.read_excel(fileobj)
+    df.columns = df.columns.str.strip()
+
+    part_col = "Material" if "Material" in df.columns else (
+        "MPN" if "MPN" in df.columns else None
+    )
+    if part_col is None:
+        raise ValueError("Chemical database missing a Material/MPN column")
+
+    parts = df[part_col].astype(str).str.strip()
+    parts = parts[parts.ne("") & parts.ne("nan")]
+    return set(parts.unique())
+
+
+def apply_chem_override(df: pd.DataFrame, chem_parts: set,
+                         part_col: str = "Part Number",
+                         type_col: str = "Type") -> pd.DataFrame:
+    """
+    Overwrite `type_col` with "CHEM" for any row whose `part_col` value
+    is found in `chem_parts`. Returns a copy — does not mutate in place.
+    """
+    if df.empty or not chem_parts or part_col not in df.columns:
+        return df
+    out = df.copy()
+    is_chem = out[part_col].astype(str).str.strip().isin(chem_parts)
+    if type_col not in out.columns:
+        out[type_col] = ""
+    out.loc[is_chem, type_col] = "CHEM"
+    return out
 # Movement types where a negative Quantity means the material was actually
 # consumed/issued, and a positive Quantity means it was returned/reversed
 # (i.e. un-consumed) back into stock on the SAME order.
@@ -148,10 +188,14 @@ def build_material_summary(
     nrc_df: pd.DataFrame,
     mrm_dict: dict,
     scores_df: pd.DataFrame,
+    chem_parts: set = None,
 ) -> pd.DataFrame:
     """
     For each defect combo, pull all Y-toggle materials from matching orders.
     Returns detail table: one row per (defect, ac_reg, part_number).
+
+    chem_parts (optional, from load_chem_db()) overrides Type = "CHEM" for
+    any matching Part Number, same as in build_workscope_material_table().
     """
     rows = []
     for _, score_row in scores_df.iterrows():
@@ -177,6 +221,10 @@ def build_material_summary(
             if mats.empty:
                 continue
             for _, mat in mats.iterrows():
+                part_no  = mat.get("Part Number", "")
+                mat_type = mat.get("Type", "")
+                if chem_parts and str(part_no).strip() in chem_parts:
+                    mat_type = "CHEM"
                 rows.append({
                     "defect_key":           key,
                     "location":             loc,
@@ -185,11 +233,11 @@ def build_material_summary(
                     "score":                sc,
                     "ac_reg":               ac_reg,
                     "Order No":             mat["Order"],
-                    "Part Number":          mat.get("Part Number", ""),
+                    "Part Number":          part_no,
                     "Material Description": mat.get("Material Description", ""),
                     "Qty Req":              mat.get("Qty Req", 0),
                     "UOM":                  mat.get("UOM", ""),
-                    "Type":                 mat.get("Type", ""),
+                    "Type":                 mat_type,
                     "Fulfillment Status":   mat.get("Material Fullfilment Status", ""),
                 })
     return pd.DataFrame(rows)
@@ -232,6 +280,7 @@ def build_workscope_material_table(
     mrm_dict: dict,                     # {ac_reg: mrm_df}
     rop_db: pd.DataFrame = None,        # from load_rop_db(), optional
     consumption_dict: dict = None,      # {ac_reg: consumption_df}, optional
+    chem_parts: set = None,             # from load_chem_db(), optional
 ) -> pd.DataFrame:
     """
     Aggregate ALL y-toggle materials across all aircraft for the whole workscope.
@@ -252,6 +301,10 @@ def build_workscope_material_table(
     consumption_dict values come from load_actual_consumption(), keyed with
     one row per Order + Part Number. Since this table is Part-Number-level
     (not per-order), consumption is summed across all orders for that AC.
+
+    chem_parts is a set of Part Numbers (from load_chem_db()) — any matching
+    part has its Type overwritten to "CHEM", regardless of what Type the
+    MRM file originally gave it.
     """
     if not mrm_dict:
         return pd.DataFrame()
@@ -434,6 +487,12 @@ def build_workscope_material_table(
             result[col] = rounded.apply(
                 lambda x: int(x) if pd.notna(x) and x == int(x) else x
             )
+
+    # Apply chemical-material override — any part found in the chemical
+    # reference list is relabeled Type = "CHEM", regardless of what the
+    # MRM file originally tagged it as.
+    if chem_parts:
+        result = apply_chem_override(result, chem_parts)
 
     return result
 
