@@ -1,0 +1,34 @@
+name: Supabase Keepalive
+
+# Pings Supabase every 3 days with a real database WRITE so the free-tier
+# project never sits idle long enough to trigger the 7-day auto-pause.
+# Runs independently of the Streamlit app — no user traffic required.
+
+on:
+  schedule:
+    - cron: '0 3 */3 * *'   # 03:00 UTC, every 3rd day of the month
+  workflow_dispatch: {}      # lets you trigger it manually from the Actions tab to test
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Upsert heartbeat row in Supabase
+        run: |
+          http_code=$(curl -s -o /tmp/response.txt -w "%{http_code}" \
+            -X POST "${{ secrets.SUPABASE_URL }}/rest/v1/app_heartbeat" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: resolution=merge-duplicates" \
+            -d "{\"id\": 1, \"pinged_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}")
+
+          echo "HTTP status: $http_code"
+          cat /tmp/response.txt
+
+          if [ "$http_code" -ge 400 ]; then
+            echo "::error::Supabase keepalive ping failed with status $http_code"
+            exit 1
+          fi
+
+          echo "Keepalive ping succeeded."
