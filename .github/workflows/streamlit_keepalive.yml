@@ -17,7 +17,7 @@ jobs:
       # e.g. https://your-app-name.streamlit.app
       - name: Visit Streamlit app
         env:
-          APP_URL: "https://REPLACE-WITH-YOUR-APP-URL.streamlit.app"
+          APP_URL: "https://mdr-clustering.streamlit.app/"
         run: |
           http_code=$(curl -s -o /tmp/response.html -w "%{http_code}" \
             --retry 5 \
