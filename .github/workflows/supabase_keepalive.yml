@@ -3,6 +3,9 @@ name: Supabase Keepalive
 # Pings Supabase every 3 days with a real database WRITE so the free-tier
 # project never sits idle long enough to trigger the 7-day auto-pause.
 # Runs independently of the Streamlit app — no user traffic required.
+#
+# curl --retry handles the occasional transient DNS/network blip on
+# GitHub-hosted runners so a single flaky attempt doesn't fail the whole run.
 
 on:
   schedule:
@@ -16,6 +19,11 @@ jobs:
       - name: Upsert heartbeat row in Supabase
         run: |
           http_code=$(curl -s -o /tmp/response.txt -w "%{http_code}" \
+            --retry 5 \
+            --retry-delay 10 \
+            --retry-all-errors \
+            --connect-timeout 15 \
+            --max-time 30 \
             -X POST "${{ secrets.SUPABASE_URL }}/rest/v1/app_heartbeat" \
             -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
@@ -27,7 +35,7 @@ jobs:
           cat /tmp/response.txt
 
           if [ "$http_code" -ge 400 ]; then
-            echo "::error::Supabase keepalive ping failed with status $http_code"
+            echo "::error::Supabase keepalive ping failed with status $http_code after retries"
             exit 1
           fi
 
