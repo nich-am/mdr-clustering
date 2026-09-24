@@ -1,41 +1,40 @@
 name: Streamlit Keepalive
 
-# Visits the Streamlit app on a schedule so it never sits idle long enough
-# to trigger Streamlit Community Cloud's inactivity sleep.
-# Runs independently — no need for anyone to manually open the app.
+# Visits the Streamlit app with a real headless browser (not a bare HTTP
+# request) so it never sits idle long enough to trigger Streamlit Community
+# Cloud's ~12-hour inactivity sleep, and automatically clicks the
+# "Yes, get this app back up!" button if it finds the app already asleep.
+#
+# A plain curl/GET does NOT work here: Streamlit Cloud's wake flow depends
+# on cookie-based auth redirects (a bare client loops forever = curl exit
+# code 47, "too many redirects"), and even a 200 OK can just be a static
+# HTML shell with the actual app never booted. Playwright runs real JS and
+# opens the same WebSocket connection a real visitor's browser would.
 
 on:
   schedule:
-    - cron: '0 4 */3 * *'   # 04:00 UTC, every 3rd day (offset 1hr from Supabase ping)
+    - cron: '0 */6 * * *'   # every 6 hours — safely under the ~12h sleep window
   workflow_dispatch: {}      # lets you trigger it manually from the Actions tab to test
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      # >>> REPLACE the URL below with your actual Streamlit app URL <<<
-      # e.g. https://your-app-name.streamlit.app
-      - name: Visit Streamlit app
-        env:
-          APP_URL: "https://mdr-clustering.streamlit.app/"
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Playwright
         run: |
-          http_code=$(curl -s -o /tmp/response.html -w "%{http_code}" \
-            --retry 5 \
-            --retry-delay 10 \
-            --retry-all-errors \
-            --connect-timeout 15 \
-            --max-time 30 \
-            -L "$APP_URL")
+          pip install playwright
+          python -m playwright install --with-deps chromium
 
-          echo "HTTP status: $http_code"
-
-          if [ "$http_code" -ge 400 ]; then
-            echo "::error::Could not reach Streamlit app, status $http_code"
-            exit 1
-          fi
-
-          if grep -qi "zzzz\|gone to sleep\|wake.*app" /tmp/response.html; then
-            echo "::warning::App appears to still be showing a sleep screen — a plain HTTP visit may not be enough to keep it fully awake. Consider the Playwright-based fallback if this keeps happening."
-          else
-            echo "App responded normally — keepalive visit succeeded."
-          fi
+      - name: Visit app and wake if asleep
+        env:
+          # >>> REPLACE the URL below with your actual Streamlit app URL <<<
+          STREAMLIT_APP_URL: "https://REPLACE-WITH-YOUR-APP-URL.streamlit.app"
+        run: python scripts/keepalive_streamlit.py
