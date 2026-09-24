@@ -36,5 +36,5 @@ jobs:
       - name: Visit app and wake if asleep
         env:
           # >>> REPLACE the URL below with your actual Streamlit app URL <<<
-          STREAMLIT_APP_URL: "https://REPLACE-WITH-YOUR-APP-URL.streamlit.app"
+          STREAMLIT_APP_URL: "https://mdr-clustering.streamlit.app/"
         run: python scripts/keepalive_streamlit.py
