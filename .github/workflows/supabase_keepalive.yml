@@ -1,29 +1,30 @@
 name: Supabase Keepalive
 
-# Pings Supabase every 3 days with a real database WRITE so the free-tier
-# project never sits idle long enough to trigger the 7-day auto-pause.
-# Runs independently of the Streamlit app — no user traffic required.
+# Pings Supabase DAILY with both a real database WRITE and a READ, so the
+# free-tier project never sits idle long enough to trigger the 7-day
+# auto-pause. Runs independently of the Streamlit app — no user traffic
+# required.
 #
-# curl --retry handles the occasional transient DNS/network blip on
-# GitHub-hosted runners so a single flaky attempt doesn't fail the whole run.
+# Why daily, not every 3 days:
+# Supabase's own docs hedge that a project "may not be paused" even with
+# activity if that activity isn't "sufficient" — the exact bar isn't
+# fully documented. Daily pings, with a mix of a write AND a read, build
+# in much more margin than a single upsert every 3 days.
 
 on:
   schedule:
-    - cron: '0 3 */3 * *'   # 03:00 UTC, every 3rd day of the month
-  workflow_dispatch: {}      # lets you trigger it manually from the Actions tab to test
+    - cron: '0 3 * * *'    # 03:00 UTC, every day
+  workflow_dispatch: {}     # lets you trigger it manually from the Actions tab to test
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Upsert heartbeat row in Supabase
+      - name: Write heartbeat row
         run: |
-          http_code=$(curl -s -o /tmp/response.txt -w "%{http_code}" \
-            --retry 5 \
-            --retry-delay 10 \
-            --retry-all-errors \
-            --connect-timeout 15 \
-            --max-time 30 \
+          write_code=$(curl -s -o /tmp/write_response.txt -w "%{http_code}" \
+            --retry 5 --retry-delay 10 --retry-all-errors \
+            --connect-timeout 15 --max-time 30 \
             -X POST "${{ secrets.SUPABASE_URL }}/rest/v1/app_heartbeat" \
             -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
             -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
@@ -31,12 +32,30 @@ jobs:
             -H "Prefer: resolution=merge-duplicates" \
             -d "{\"id\": 1, \"pinged_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}")
 
-          echo "HTTP status: $http_code"
-          cat /tmp/response.txt
+          echo "Write HTTP status: $write_code"
+          cat /tmp/write_response.txt
 
-          if [ "$http_code" -ge 400 ]; then
-            echo "::error::Supabase keepalive ping failed with status $http_code after retries"
+          if [ "$write_code" -ge 400 ]; then
+            echo "::error::Heartbeat WRITE failed with status $write_code after retries"
             exit 1
           fi
 
-          echo "Keepalive ping succeeded."
+      - name: Read heartbeat row back
+        run: |
+          read_code=$(curl -s -o /tmp/read_response.txt -w "%{http_code}" \
+            --retry 5 --retry-delay 10 --retry-all-errors \
+            --connect-timeout 15 --max-time 30 \
+            -X GET "${{ secrets.SUPABASE_URL }}/rest/v1/app_heartbeat?id=eq.1&select=pinged_at" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}")
+
+          echo "Read HTTP status: $read_code"
+          cat /tmp/read_response.txt
+
+          if [ "$read_code" -ge 400 ]; then
+            echo "::error::Heartbeat READ failed with status $read_code after retries"
+            exit 1
+          fi
+
+          echo ""
+          echo "Keepalive succeeded — both write and read confirmed."
