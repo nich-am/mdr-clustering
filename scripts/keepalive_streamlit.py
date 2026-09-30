@@ -13,11 +13,17 @@ which is exactly the "too many redirects" (curl exit 47) failure.
 A GET request can also return HTTP 200 while only fetching a static
 HTML shell — the actual Python app never boots without a real
 browser executing JS and opening a WebSocket connection.
+
+v2 fix: whether or not a wake button was clicked, this now POLLS for
+the app container for up to a full timeout window instead of checking
+once. A previous version only polled after clicking wake — but even an
+already-awake app can take several seconds to finish its WebSocket
+handshake and render, so a single instant check was firing false
+"something unexpected happened" errors on perfectly healthy runs.
 """
 
 import os
 import sys
-import time
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
@@ -43,6 +49,18 @@ def _app_is_rendered(page) -> bool:
         except Exception:
             continue
     return False
+
+
+def _wait_for_app(page, timeout_s: int) -> bool:
+    """Poll for the app container to appear, checking every 3s."""
+    waited = 0
+    step = 3
+    while waited < timeout_s:
+        if _app_is_rendered(page):
+            return True
+        page.wait_for_timeout(step * 1000)
+        waited += step
+    return _app_is_rendered(page)  # one last check after the final wait
 
 
 def _find_wake_button(page):
@@ -82,41 +100,28 @@ def main() -> int:
 
         wake_btn = _find_wake_button(page)
         if wake_btn is not None:
-            print("App is asleep — clicking wake-up button ...")
+            print("Sleep screen detected — clicking wake-up button ...")
             wake_btn.click()
-
             # Cold starts can take a couple of minutes.
-            booted = False
-            for _ in range(24):  # poll for up to ~2 minutes
-                page.wait_for_timeout(5_000)
-                if _app_is_rendered(page):
-                    booted = True
-                    break
-
-            if booted:
-                print("App booted successfully after wake click.")
-            else:
-                print(
-                    "::warning::Clicked wake button but app didn't finish "
-                    "booting within 2 minutes — it may still be starting up. "
-                    "This isn't necessarily a failure; Streamlit cold starts "
-                    "can occasionally take longer."
-                )
+            booted = _wait_for_app(page, timeout_s=120)
         else:
-            # No wake button — confirm the real app actually rendered,
-            # not just an HTML shell.
-            if _app_is_rendered(page):
-                print("App was already awake and rendered correctly.")
-            else:
-                print(
-                    "::error::No wake button found, but the app container "
-                    "never rendered either — something unexpected happened."
-                )
-                browser.close()
-                return 1
+            print("No sleep screen — waiting for the app to finish rendering ...")
+            # Even an already-awake app needs a few seconds for its
+            # WebSocket handshake, so poll rather than checking once.
+            booted = _wait_for_app(page, timeout_s=45)
 
+        if booted:
+            print("App confirmed loaded and running.")
+            browser.close()
+            return 0
+
+        print(
+            "::error::App container never rendered within the timeout — "
+            "either a genuine outage or an unusually slow cold start. "
+            "Check the app directly in a browser to confirm."
+        )
         browser.close()
-        return 0
+        return 1
 
 
 if __name__ == "__main__":
